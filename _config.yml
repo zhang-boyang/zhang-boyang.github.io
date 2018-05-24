@@ -1,0 +1,18 @@
+# Site settings
+title: Note of John Brown
+email: zhangby_fx@foxmail.com
+description: ""
+baseurl: ""
+author_name: 'John Brown'
+
+#pagination
+plugins: [jekyll-paginate] 
+paginate: 6
+paginate_path: "page:num"
+# Build settings
+highlighter: pygments
+markdown: kramdown  # [ maruku | rdiscount | kramdown | redcarpet ]
+kramdown:
+  input:         GFM
+  auto_ids:      true
+  auto_id_prefix: 'id-'

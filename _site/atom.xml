@@ -1,0 +1,1782 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+
+  <title>Note of John Brown</title>
+  <updated>2018-05-25T01:03:15+08:00</updated>
+  <id></id>
+  <author>
+    <name>John Brown</name>
+    <email></email>
+  </author>
+
+  
+  <entry>
+    <title>6.824:Lab6-7 Replicated State Machine</title>
+    <link href="//2018/05/22/6.824-Lab6-7-Replicated-State-Machine.html"/>
+    <updated>2018-05-22T00:00:00+08:00</updated>
+    <id>//2018/05/22/6.824:Lab6-7-Replicated-State-Machine</id>
+    <content type="html">&lt;h1 id=&quot;id-paxos&quot;&gt;Paxos&lt;/h1&gt;
+&lt;h2 id=&quot;id-introduction&quot;&gt;Introduction&lt;/h2&gt;
+&lt;p&gt;在实验6-7中，将使用RSM（replicated state machine）的方法复写锁服务，在这个方法中，有一个节点为master，master接收来自client节点的请求并在所有的节点以相同的方式在所有的副本下执行。&lt;/p&gt;
+
+&lt;p&gt;当master节点失败，任何一个副本都会接管master的工作，因为这些副本都与那个失败的节点有着相同的状态。其中一个比较有挑战性任务时确保集群中的每一个节点所接受的信息是一致的（即哪些是副本，谁是master，哪些副本是keepalive的），即使存在网络分裂（network partition）或者是乱序的情况，数据仍然要保持一致。这里我们使用Paxos协议来实现这一策略。&lt;/p&gt;
+
+&lt;p&gt;在此次实验中，将要实现Paxos并使用达成集群成员的改变（view change）。&lt;/p&gt;
+
+&lt;ul&gt;
+  &lt;li&gt;
+    &lt;p&gt;RSM module&lt;/p&gt;
+
+    &lt;p&gt;RSM负责副本管理，当一个节点加入时，RSM模块直接配置并添加。RSM模块也是管理recovery线程确保在相同的view下每一个节点的状态是相同。这个本实验中唯一需要recovery Paxos操作。在实验7中，RSM模块将管理锁服务。&lt;/p&gt;
+  &lt;/li&gt;
+  &lt;li&gt;
+    &lt;p&gt;config module&lt;/p&gt;
+
+    &lt;p&gt;config模块负责管理view的改变。当RSM模块要求在当前view上添加一个节点时，config模块将使用Paxos来开启一个新view。config模块将周期性的发送心跳来检查集群中的其他节点是否存活，如果某一成员不需要失联，就讲此节点从当前的view中移除出去，移除节点也会使用paxos协议来达成一个新的view，这个view的value中移除了那个失联节点。&lt;/p&gt;
+  &lt;/li&gt;
+  &lt;li&gt;
+    &lt;p&gt;Paxos模块&lt;/p&gt;
+
+    &lt;p&gt;Paxos模块负责运行Paxos协议来维持值一直。原则上这个值（value）可以是任何集群想要达成一直的value（当前成员节点，每一次操作的日志 etc.）。在我们的系统中，将value作为当前集群的节点成员。&lt;/p&gt;
+  &lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h2 id=&quot;id-uderstanding-how-paxos-is-used-for-view-changes&quot;&gt;Uderstanding how Paxos is used for view changes&lt;/h2&gt;
+&lt;p&gt;Paxos的实现使用了两个类，acceptor与proposer。每一个副本都有这两个类。proposer类通过提出新value的方式来发起一个paxos协议，并发送给所有的副本。acceptor类处理来自proposer的请求，并作出反馈。proposer中的run方法获取现有的nodes值，并达成一个新的value值。当一个新的instance（epoch）完成时，acceptor将调用config的paxos_commit(instance, v)方法进行提交。具体流程如下列所示：
+系统从头开始，第一个节点创建了view 1，仅仅包含了它自己，view_1 = {1}.({values})。当节点2加入时，两节点的RSM模块加入了1，并从节点1的中得到了view。然后，节点2要求它的config模块奖自己加入view1，config模块调用Paxos发起一个新的view:view_2 包含了节点1与2。当paxos成功之后 view_2为 view_2={1,2}。同理当节点3进入时，通过Paxos后view_3 = {1,2,3}。&lt;/p&gt;
+
+&lt;h2 id=&quot;id-paxos-protocal&quot;&gt;Paxos Protocal&lt;/h2&gt;
+&lt;p&gt;实验指导书上已经将propose和acceptor的具体框架写好。为代码如下：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;    proposer run(instance, v):
+     choose n, unique and higher than any n seen so far
+     send prepare(instance, n) to all servers including self
+     if oldinstance(instance, instance_value) from any node:
+       commit to the instance_value locally
+     else if prepare_ok(n_a, v_a) from majority:
+       v' = v_a with highest n_a; choose own v otherwise
+       send accept(instance, n, v') to all
+       if accept_ok(n) from majority:
+         send decided(instance, v') to all
+    
+    acceptor state:
+     must persist across reboots
+     n_h (highest prepare seen)
+     instance_h, (highest instance accepted)
+     n_a, v_a (highest accept seen)
+    
+    acceptor prepare(instance, n) handler:
+     if instance &amp;lt;= instance_h
+       reply oldinstance(instance, instance_value)
+     else if n &amp;gt; n_h
+       n_h = n
+       reply prepare_ok(n_a, v_a)
+     else
+       reply prepare_reject
+    
+    acceptor accept(instance, n, v) handler:
+     if n &amp;gt;= n_h
+       n_a = n
+       v_a = v
+       reply accept_ok(n)
+     else
+       reply accept_reject
+    
+    acceptor decide(instance, v) handler:
+     paxos_commit(instance, v)
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;其实这一实验的中心就是实验Paxos协议。propser和acceptor框架已经搭好，所需要做的就是将其成员函数补齐。伪代码已经给出，剩下的就是实现与调试。&lt;/p&gt;
+
+&lt;h1 id=&quot;id-replicated-state-machine&quot;&gt;Replicated State machine&lt;/h1&gt;
+&lt;h2 id=&quot;id-introduction-1&quot;&gt;Introduction&lt;/h2&gt;
+
+&lt;p&gt;在这个实验中奖使用RSM（复制状态机）的方法实现锁服务的副本管理。在RSM方法里使用一主多备份（one master， others slaves）。master节点负责处理来自客户端（client）的请求并在都有副本上执行这些请求。为了保证所有副本完全一致，这些副本的执行顺序必须完全有序，所有请求的所有结果必须完全一致。RSM使用Paxos协议处理节点成员之间的变更（如失败和重新加入副本等）&lt;/p&gt;
+
+&lt;p&gt;为了确保所有的请求的顺序是唯一的，主节点给每一个请求分配一个viewstamp以保证序列。viewstamp又两个部分组成，一个为view number（paxos协议）和一个单调递增的序列号（seq no）。一般而言，viewstamp中的view number由高到低排序，seq no也是有高到低排序。怎样保证viewstamps是唯一的呢？这是因为Paxos保证左右的viewnumber是一个有序的。另外对于每一个view，现有的view成员是一致的，所以RSM节点可以保证一个唯一的master，只有它可以给每一个请求一个递增的seqno来保证在一个view中请求的顺序性。&lt;/p&gt;
+
+&lt;p&gt;这一实验的首要任务是在我们现有的RPC库之上构建一个RSM库，以确保副本的一致性。有一些约束的调节来确保所有副本以相同的顺序执行相同的请求得到相同的结果。一旦你已经构建好了RSM库，我们将要求你使用RSM对锁服务进行副本化。&lt;/p&gt;
+
+&lt;h2 id=&quot;id-start&quot;&gt;Start&lt;/h2&gt;
+&lt;p&gt;首先提供了rsm_client 与 rsm 这两个文件。RSM_clinet主要确定并与服务的master节点进行通信，lock_client可以使用call的方法调用RSM的这一方法（invoke）。&lt;/p&gt;
+
+&lt;p&gt;为了将所有的服务的副本化，你服务必须创建一个RSM服务对象，并使用他来处理来自客户端的RPC。并使用config对服务进行Paxos的一致性保障。&lt;/p&gt;
+
+&lt;h2 id=&quot;id-your-job&quot;&gt;Your Job&lt;/h2&gt;
+&lt;p&gt;你的工作是将锁缓存服务构建在RSM服务之上，通过rsm_test.pl 8-16进行测试。&lt;/p&gt;
+
+&lt;h3 id=&quot;id-step-one-副本化锁缓存服务&quot;&gt;Step One 副本化锁缓存服务&lt;/h3&gt;
+&lt;p&gt;重构lab4中的锁缓存服务包括客户端与服务端（lock_server_cache_rsm 与 locker_client_cache_rsm）&lt;/p&gt;
+
+&lt;p&gt;在实现锁缓存服务副本化时应当考虑三个问题。&lt;/p&gt;
+&lt;ol&gt;
+  &lt;li&gt;
+    &lt;p&gt;server端（SVR_HDL）不要直接去调用client端（SLT_HDL），会发生死锁（RSM层的invoke_mutex 死锁）。C_A向S请求acquire L1（申请了invoke_mutex），而这时L1在C_B上，S又向C_B发起revoke，但是上一步（acquire L1还未完成）S拿着invoke_mutex，这样会产生死锁。所以不可在调用中再调用。为了解决这个问题，使用多个线程进行处理。client使用 releaser 这个线程专门进行release处理，server使用revoker和retryer 对客户端进行revoke和retry调用。&lt;/p&gt;
+
+    &lt;p&gt;以客户端为例，基本逻辑为利用rpc/fifo.h提供的队列，连接RPC handler和background（releaser etc.）线程之间的通信。fifo队列中一个pthread_cond_t，当队列为空的时候休眠，当队列有东西的时候被唤醒，有点像生产者和消费者模式。handler作为生产者将需要处理的item放入到队列中，releaser作为消费者，一旦在队列中存在item，就对此item进行处理。见下列代码：&lt;/p&gt;
+
+    &lt;pre&gt;&lt;code class=&quot;language-c++&quot;&gt; //This is a producer
+ void lock_client_cache_rsm::DealRelease(ClientLockRSM &amp;amp; lock_item, lock_protocol::lockid_t lid)
+ {
+     if (lock_item.status == AcqRet::NONE) {
+         //primary done, req will resend, so this situation will happend
+         //release_queue_.enq(&amp;amp;lock_item);
+         return;
+     }
+     if (lock_item.is_revoked){
+         lock_item.status = AcqRet::RELEASING;
+         release_queue_.enq(&amp;amp;lock_item);
+     }else{
+         lock_item.status = AcqRet::FREE;
+         lock_item.is_finished = true;
+     }
+     pthread_cond_broadcast(&amp;amp;lock_item.wait_free_);
+     pthread_cond_broadcast(&amp;amp;lock_item.wait_acq_);
+ }
+&lt;/code&gt;&lt;/pre&gt;
+    &lt;pre&gt;&lt;code&gt; //This is a consumer
+ void
+ lock_client_cache_rsm::releaser()
+ {
+    
+   // This method should be a continuous loop, waiting to be notified of
+   // freed locks that have been revoked by the server, so that it can
+   // send a release RPC.
+   do{
+       ClientLockRSM * lock_item_ptr = NULL;
+       release_queue_.deq(&amp;amp;lock_item_ptr);
+       VERIFY(lock_item_ptr != NULL);
+       pthread_mutex_lock(&amp;amp;lock_map_mutex_);
+       lock_protocol::lockid_t lid = lock_item_ptr-&amp;gt;lid;
+       lock_protocol::xid_t xid_ = lock_item_ptr-&amp;gt;xid;
+       if (lu != NULL) lu-&amp;gt;dorelease(lid);
+       int r;
+       pthread_mutex_unlock(&amp;amp;lock_map_mutex_);
+       lock_protocol::status ret = rsmc-&amp;gt;call(lock_protocol::release, lid, id, xid_, r);
+       tprintf(&quot;I send it %llu back to server\n&quot;, lid);
+       VERIFY(ret == lock_protocol::OK);
+       pthread_mutex_lock(&amp;amp;lock_map_mutex_);
+       lock_item_ptr-&amp;gt;is_finished = false;
+       lock_item_ptr-&amp;gt;is_revoked = false;
+       lock_item_ptr-&amp;gt;status = AcqRet::NONE;
+       pthread_cond_signal(&amp;amp;lock_item_ptr-&amp;gt;wait_free_);
+       pthread_mutex_unlock(&amp;amp;lock_map_mutex_);
+   }while(true);
+&lt;/code&gt;&lt;/pre&gt;
+    &lt;p&gt;同理在锁服务端还有一个revoker和retryer，与其类似。&lt;/p&gt;
+  &lt;/li&gt;
+  &lt;li&gt;
+    &lt;p&gt;缓冲锁服务的客户端应当有能力处理锁服务的失败，因为一旦primary（master）节点失败选出新的primary节点后，客户端是不清楚老的primary节点是否已经处理了自己的请求。&lt;/p&gt;
+
+    &lt;p&gt;为了处理这一问题，客户端要给所有自己的请求一个系列号，此序列号非比序列号（非rsm viewstamp中的seqno），每一个请求有一个唯一的用户ID（这里其实用的就是与Lab4一样的IP端口号二元组），对于一个acquire请求，客户端选出一个未使用的seqno，并将其seqno作为参数参入到请求中。release同样需要将这个seqno传入。使用这一方法就需要客户端记住每一个锁每一个用户的最大seqno，这里我将锁结构加入一个map记录这一信息(lock_info_)&lt;/p&gt;
+    &lt;pre&gt;&lt;code class=&quot;language-C++&quot;&gt; struct CondLockCacheRSM : public CondLock{
+     //Recode every user_id with it's highest
+     std::map&amp;lt;std::string, lock_protocol::xid_t&amp;gt; lock_info_;
+     std::queue&amp;lt;std::string&amp;gt; wait_retry_queue_;
+     std::queue&amp;lt;std::string&amp;gt; wait_revoke_queue_;
+     lock_protocol::lockid_t lid;
+     std::string user_id;
+ };
+&lt;/code&gt;&lt;/pre&gt;
+    &lt;p&gt;&lt;strong&gt;服务端应该丢弃掉过时的请求，但是必须回复一个来自相同客户端重复信息的请求。&lt;/strong&gt;
+ 这里我们使用lock_protocol::lockid_t xid_t 作为seqno。&lt;/p&gt;
+  &lt;/li&gt;
+  &lt;li&gt;
+    &lt;p&gt;如果没在没有失败的情况下，所有服务起的所状态应当是一致的。如果要达到这一条件，必须要满足一下两点：&lt;/p&gt;
+    &lt;ul&gt;
+      &lt;li&gt;当input作用于所有的副本之上，且作用方式要相同，（才能得到相同的状态）&lt;/li&gt;
+      &lt;li&gt;当input只有primary承担时，不应该改变primary的状态&lt;/li&gt;
+    &lt;/ul&gt;
+
+    &lt;p&gt;换句话说就是primary与non-primary（master与slaves）之间的状态在没有失败的情况下应当是完全相同的。&lt;/p&gt;
+  &lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;p&gt;在完成了次步骤后使用Lab1当时测试lock的locker_test应当要passed all tests sucessfully才可以&lt;/p&gt;
+
+&lt;h2 id=&quot;id-setp-tworsm-without-failures&quot;&gt;Setp Two:RSM Without Failures&lt;/h2&gt;
+&lt;p&gt;第二步的任务是在第一步锁服务正常的情况下，使用RSM机制。&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;RSM客户端通过调用invoke函数请求master节点&lt;/li&gt;
+  &lt;li&gt;master节点分配client请求一个viewstamp，然后将此请求再发送给每一个slave&lt;/li&gt;
+  &lt;li&gt;如果次请求的viewstamp正常，slave将执行这个请求并返回OK给master&lt;/li&gt;
+  &lt;li&gt;master收到所有的slave都返回正常（&lt;code&gt;rsm_client_protocol::OK&lt;/code&gt;）后，在本地执行并将回复发送给客户端，如图[1]:&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/distribution_pic/acq_ok.png&quot; alt=&quot;image&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;em&gt;图[1] 副本化客户端请求服务端逻辑&lt;/em&gt;&lt;/p&gt;
+
+&lt;p&gt;具体的一些细节如下：&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;
+    &lt;p&gt;rsm::client_invoke中如果paxos的view正在改变，应当返回rsm_client_protocol::BUSY告诉客户端稍后重试，如果RSM已经不再是此集群的master节点，应当返回rsm_client_protocol::NOTPRIMARY，client会调用init_members()，重新选出一个master节点。如果一切正常，分配一个seqno，将自己的viewstamp和req发送给其他slave，（&lt;code&gt;cl-&amp;gt;call(rsm_protocol::invoke, procno, last_myvs, req, dummy, rpcc::to(1000));&lt;/code&gt;）。确认所有slave都ok后，自己调用execute()。&lt;/p&gt;
+
+    &lt;p&gt;如果有一个slave返回不OK的时候（或者失败）的时候，master节点不执行此次请求，返回rsm_client_protocol::BUSY，此时失败的slave节点的seqno将与其他正常节点的不相同，导致其进行recovery（heardbeat失去联系，remove_wo）。如图[2]所示:&lt;/p&gt;
+
+    &lt;p&gt;&lt;img src=&quot;/images/distribution_pic/acq_fail.png&quot; alt=&quot;image&quot; /&gt;
+  &lt;em&gt;图[2] 有副本节点失败的&lt;/em&gt;&lt;/p&gt;
+
+    &lt;p&gt;具体代码如下：&lt;/p&gt;
+    &lt;pre&gt;&lt;code&gt;  rsm_client_protocol::status
+  rsm::client_invoke(int procno, std::string req, std::string &amp;amp;r)
+  {
+    int ret = rsm_client_protocol::OK;
+    // You fill this in for Lab 7
+    ScopedLock inv_m(&amp;amp;invoke_mutex);
+    ScopedLock rsm_m(&amp;amp;rsm_mutex);
+    
+    if (inviewchange){
+        ret = rsm_client_protocol::BUSY;
+    }else if (primary != cfg-&amp;gt;myaddr()) {
+        ret = rsm_client_protocol::NOTPRIMARY;
+    }
+    if (ret != rsm_client_protocol::OK) return ret;
+    
+    bool is_fail = false;
+    last_myvs = myvs;
+    myvs.seqno++;
+    int index = 0;
+    std::vector&amp;lt;std::string&amp;gt; view = cfg-&amp;gt;get_view(vid_commit);
+    for(typeof(view.begin()) it = view.begin(); it != view.end(); it++){
+        if (*it == primary) continue;
+        int dummy;
+        rsm_protocol::status rpc_r = rsm_protocol::ERR;
+        handle h(*it);
+        rpcc *cl = h.safebind();
+        pthread_mutex_unlock(&amp;amp;rsm_mutex);
+        if (cl){
+            rpc_r = cl-&amp;gt;call(rsm_protocol::invoke, procno, last_myvs, req, dummy, rpcc::to(1000));
+        }
+        pthread_mutex_lock(&amp;amp;rsm_mutex);
+        if (rpc_r != rsm_protocol::OK){
+            is_fail = true;
+            tprintf(&quot;I am here is_false=true\n&quot;);
+            break;
+        }
+        if (index++ == 0){
+            breakpoint1();
+            partition1();
+        }
+    }
+    
+    if (is_fail) return rsm_client_protocol::BUSY;
+    
+    execute(procno, req, r);
+    
+    return ret;
+  }
+&lt;/code&gt;&lt;/pre&gt;
+    &lt;p&gt;lock_tester中使用cache_rsm调用。&lt;/p&gt;
+  &lt;/li&gt;
+  &lt;li&gt;只有primary节点才与client节点通信，其余的副本slave节点对于retry和rovoke的行为保持沉默就好，&lt;code&gt;if (rsm-&amp;gt;amiprimary())&lt;/code&gt;在retryer和revoker中加入判断，如果非primary就当作什么也没有发生，primary&lt;code&gt;call(rlock_protocol::retry, lid, xid, r);&lt;/code&gt;与客户端进行通行。&lt;/li&gt;
+  &lt;li&gt;
+    &lt;p&gt;客户端与服务端进行通行的时候，不能直接使用lock_server在RPC上注册的函数，而要使用rsm_client的invoke于服务段rsm_server中的client_invoke通行，好在实验代码以提供了这样的函数并完成，只是在调用时注意。以请求客户端的acquire为例：&lt;/p&gt;
+
+    &lt;pre&gt;&lt;code&gt;  int lock_client_cache_rsm::SendAcqToSvr(ClientLockRSM &amp;amp; lock_item, lock_protocol::lockid_t lid){
+      int r;
+      xid++;
+      lock_item.is_retried  = false;
+      lock_item.xid = xid;
+      pthread_mutex_unlock(&amp;amp;lock_map_mutex_);
+      int ret = rsmc-&amp;gt;call(lock_protocol::acquire, lid, id, xid ,r);
+      pthread_mutex_lock(&amp;amp;lock_map_mutex_);
+      tprintf(&quot;I sent a msg to svr, ret=%d, xid=%lld, ret=%d\n&quot;, r, xid, ret);
+      if(ret != lock_protocol::OK) return ret;
+      if (r == AcqRet::OK){
+          lock_item.status = AcqRet::FREE;
+          tprintf(&quot;%s said OK lid:%lld\n&quot;, rsmc-&amp;gt;primary.c_str(), lid);
+      } else if (r == AcqRet::RETRY) {
+          lock_item.status = AcqRet::ACQING;
+      } else {
+          tprintf(&quot;unknow svr return %d\n&quot;, ret);
+      }
+      return ret;
+    
+  }
+&lt;/code&gt;&lt;/pre&gt;
+    &lt;h2 id=&quot;id-step-threecope-with-backup-failures-and-implement-state-transfer&quot;&gt;Step Three:Cope With Backup Failures and Implement State Transfer&lt;/h2&gt;
+    &lt;p&gt;这一步需要处理备份失败后。当发一线一个失败的节点或者是有一个新的节点加入时，这里就需要考虑Paxos协议。这些行为会调用commit_change()达成一个新的view，当新的view形成时，inviewchange为true，表明了这个节点在正常工作前需要通过RSM状态恢复（recovery）。recovery函数已实现。&lt;/p&gt;
+  &lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;所有的副本应当从master节点通过转移状态（transferstate）恢复。这个状态应当与primary的一模一样。当recovery结束时，将inviewchange值置为false，从而允许处理请求，在所有的副本恢复完成前，primary节点不应当接受与发送任何的请求给副本。&lt;/p&gt;
+
+&lt;p&gt;实现状态转移，最主要的是要实现marshal_state和unmarsh_state方法。（其实就是将primary那个装lock信息的map序列化后传给slave，然后slave再反序列化成自己的lock信息）这里可以使用rpc通信中的marshall和unmarshall类，« 已经重载很方便。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;std::string
+lock_server_cache_rsm::marshal_state()
+{
+  marshall rep;
+  ScopeLock ml(&amp;amp;m_lock_mutex_);
+
+  rep &amp;lt;&amp;lt; (unsigned int)map_lock_.size();
+  foreach(map_lock_, lock_it){
+      rep &amp;lt;&amp;lt; lock_it-&amp;gt;first;
+      rep &amp;lt;&amp;lt; lock_it-&amp;gt;second.is_locked;
+      rep &amp;lt;&amp;lt; lock_it-&amp;gt;second.lid;
+      //rep &amp;lt;&amp;lt; map_it-&amp;gt;second.pcond; pcond is not used after lab4
+      rep &amp;lt;&amp;lt; lock_it-&amp;gt;second.user_id;
+
+      rep &amp;lt;&amp;lt; (unsigned int)lock_it-&amp;gt;second.lock_info_.size();
+      foreach(lock_it-&amp;gt;second.lock_info_, info_it){
+          rep &amp;lt;&amp;lt; info_it-&amp;gt;first;
+          rep &amp;lt;&amp;lt; info_it-&amp;gt;second;
+      }
+
+      std::queue&amp;lt;std::string&amp;gt; tmp_queue = lock_it-&amp;gt;second.wait_retry_queue_;
+      rep &amp;lt;&amp;lt; (unsigned int)tmp_queue.size();
+      while(!tmp_queue.empty()){
+          rep &amp;lt;&amp;lt; tmp_queue.front();
+          tmp_queue.pop();
+      }
+
+      tmp_queue = lock_it-&amp;gt;second.wait_revoke_queue_;
+      rep &amp;lt;&amp;lt; (unsigned int)tmp_queue.size();
+        while(!tmp_queue.empty()){
+        rep &amp;lt;&amp;lt; tmp_queue.front();
+        tmp_queue.pop();
+      }
+  }
+
+  return rep.str();
+}
+
+void
+lock_server_cache_rsm::unmarshal_state(std::string state)
+{
+    unmarshall rep(state);
+    ScopeLock ml(&amp;amp;m_lock_mutex_);
+    map_lock_.clear();
+    unsigned int lock_size = 0;
+    rep &amp;gt;&amp;gt; lock_size;
+    for(unsigned int i = 0; i &amp;lt; lock_size; i++){
+        lock_protocol::lockid_t lockid = 0;
+        rep &amp;gt;&amp;gt; lockid;
+        CondLockCacheRSM&amp;amp; lock_item = map_lock_[lockid];
+        rep &amp;gt;&amp;gt; lock_item.is_locked;
+        rep &amp;gt;&amp;gt; lock_item.lid;
+        rep &amp;gt;&amp;gt; lock_item.user_id;
+
+        unsigned int info_size = 0;
+        rep &amp;gt;&amp;gt; info_size;
+        std::map&amp;lt;std::string, lock_protocol::xid_t&amp;gt;&amp;amp; info_item = lock_item.lock_info_;
+        info_item.clear();
+        for(unsigned int j = 0; j &amp;lt; info_size; j++){
+            std::string key;
+            lock_protocol::xid_t value;
+            rep &amp;gt;&amp;gt; key;
+            rep &amp;gt;&amp;gt; value;
+            info_item[key] = value;
+        }
+
+        unsigned int retry_size = 0;
+        rep &amp;gt;&amp;gt; retry_size;
+        std::queue&amp;lt;std::string&amp;gt;&amp;amp; retry_queue = lock_item.wait_retry_queue_;
+        {
+            //clear the queue
+            std::queue&amp;lt;std::string&amp;gt; empty_queue;
+            std::swap(retry_queue, empty_queue);
+        }
+        for(unsigned int k = 0; k &amp;lt; retry_size; k++){
+            std::string item;
+            rep &amp;gt;&amp;gt; item;
+            retry_queue.push(item);
+        }
+
+        unsigned int revoke_size = 0;
+        rep &amp;gt;&amp;gt; revoke_size;
+        std::queue&amp;lt;std::string&amp;gt;&amp;amp; revoke_queue = lock_item.wait_revoke_queue_;
+        {
+            //clear the queue
+            std::queue&amp;lt;std::string&amp;gt; empty_queue;
+            std::swap(revoke_queue, empty_queue);
+        }
+        for(unsigned int l = 0; l &amp;lt; revoke_size; l++){
+            std::string item;
+            rep &amp;gt;&amp;gt; item;
+            revoke_queue.push(item);
+        }
+    }
+
+}
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;之后需要同步状态时处理以下几个函数：&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;
+    &lt;p&gt;rsm::sync_with_backups    //就是为了找出现在所有的backup，并等待他们全部recovery结束&lt;/p&gt;
+
+    &lt;pre&gt;&lt;code&gt;  bool
+  rsm::sync_with_backups()
+  {
+    pthread_mutex_unlock(&amp;amp;rsm_mutex);
+    {
+      // Make sure that the state of lock_server_cache_rsm is stable during 
+      // synchronization; otherwise, the primary's state may be more recent
+      // than replicas after the synchronization.
+      ScopedLock ml(&amp;amp;invoke_mutex);
+      // By acquiring and releasing the invoke_mutex once, we make sure that
+      // the state of lock_server_cache_rsm will not be changed until all
+      // replicas are synchronized. The reason is that client_invoke arrives
+      // after this point of time will see inviewchange == true, and returns
+      // BUSY.
+    }
+    pthread_mutex_lock(&amp;amp;rsm_mutex);
+    // Start accepting synchronization request (statetransferreq) now!
+    insync = true;
+    // You fill this in for Lab 7
+    // Wait until
+    //   - all backups in view vid_insync are synchronized
+    //   - or there is a committed viewchange
+    backups = cfg-&amp;gt;get_view(vid_insync);
+      for(typeof(backups.begin()) it = backups.begin(); it != backups.end(); ){
+          if (*it == primary)
+             it = backups.erase(it);
+          else
+             it++;
+      }
+      while(vid_insync == vid_commit &amp;amp;&amp;amp; !backups.empty())
+          pthread_cond_wait(&amp;amp;recovery_cond, &amp;amp;rsm_mutex);
+      insync = false;
+      return true;
+  }
+&lt;/code&gt;&lt;/pre&gt;
+  &lt;/li&gt;
+  &lt;li&gt;rsm::sync_with_primary    //  slave节点，调用statetransfer进行状态转移（从primary那里marsh lock map，再unmarshall到自己的lock map 中）
+    &lt;pre&gt;&lt;code&gt;  bool
+  rsm::sync_with_primary()
+  {
+    // Remember the primary of vid_insync
+    std::string m = primary;
+    // You fill this in for Lab 7
+    // Keep synchronizing with primary until the synchronization succeeds,
+    // or there is a commited viewchange
+    
+    bool ret = false;
+      while(!ret &amp;amp;&amp;amp; vid_insync == vid_commit)
+          ret = statetransfer(m);
+    
+      ret = statetransferdone(m);
+    
+      return ret;
+  }
+&lt;/code&gt;&lt;/pre&gt;
+  &lt;/li&gt;
+  &lt;li&gt;rsm::statetransferdone    调用transferreq
+    &lt;pre&gt;&lt;code&gt;  bool
+  rsm::statetransferdone(std::string m) {
+    // You fill this in for Lab 7
+    // - Inform primary that this slave has synchronized for vid_insync
+    pthread_mutex_unlock(&amp;amp;rsm_mutex);
+    int r = 0;
+    int ret = 0;
+    handle h(m);
+    rpcc *cl = h.safebind();
+    
+    if (cl) {
+        ret = cl-&amp;gt;call(rsm_protocol::transferdonereq, cfg-&amp;gt;myaddr(), vid_insync, r);
+    }
+    pthread_mutex_lock(&amp;amp;rsm_mutex);
+    if (cl &amp;amp;&amp;amp; ret == rsm_protocol::OK)
+        return true;
+    else
+        return false;
+  }
+&lt;/code&gt;&lt;/pre&gt;
+  &lt;/li&gt;
+  &lt;li&gt;rsm::transferdonereq  // 如果所有的backup全部recovery完毕，唤醒sync_with_backups()函数中等待的primary
+    &lt;pre&gt;&lt;code&gt;  rsm_protocol::status
+  rsm::transferdonereq(std::string m, unsigned vid, int &amp;amp;)
+  {
+    int ret = rsm_protocol::OK;
+    ScopedLock ml(&amp;amp;rsm_mutex);
+    // You fill this in for Lab 7
+    // - Return BUSY if I am not insync, or if the slave is not synchronizing
+    //   for the same view with me
+    // - Remove the slave from the list of unsynchronized backups
+    // - Wake up recovery thread if all backups are synchronized
+    
+    if (insync == false || vid != vid_insync)
+        return rsm_protocol::BUSY;
+    
+    for(typeof(backups.begin()) it = backups.begin(); it != backups.end(); ){
+        if (*it == m)
+            it = backups.erase(it);
+        else
+            it++;
+    }
+    if (backups.empty())
+        pthread_cond_broadcast(&amp;amp;recovery_cond);
+    
+    return ret;
+  }
+&lt;/code&gt;&lt;/pre&gt;
+    &lt;h2 id=&quot;id-step-fourcope-with-primary-failures&quot;&gt;Step Four:Cope with Primary Failures&lt;/h2&gt;
+    &lt;p&gt;之是在在primary不变的情况下，处理backup（slaves, replicas…），现在遇到的情况是当primary失败后的情景。invoke函数了两个特殊的情况：&lt;/p&gt;
+  &lt;/li&gt;
+  &lt;li&gt;一个是当primary不再是primary时，返回NOPRIMARY的情况，这种情况下，client会调用init_members函数&lt;code&gt;cl-&amp;gt;call(rsm_client_protocol::members, 0, new_view, rpcc::to(1000));&lt;/code&gt;，这个函数会返回一组新的集群信息，将返回vector的倒数第一个作为当前primary，再去请求。&lt;/li&gt;
+  &lt;li&gt;第二个是当前的primary节点无返回信息，即当前primary失败。这是需要客户端在已知的view vector中取倒数第一个作为当前primary，再去请求。&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;step4 出现的这种primary失败的情况就体现出了我们lock server记录每一个client请求时最大值（xid）的意义了。当primary失效后，client和backup（slave）都不知道上一个请求到底有没有被处理（slave 无法知道 primary是在那个点宕机的）。如果处理了，而client以为没有处理，那么这就会导致duplicated request。加上对比某锁某用户的xid，如果比这次请求的xid小那么就是重复请求，新primary就会发现到。图[3]:&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/distribution_pic/primary_fail.png&quot; alt=&quot;image&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;em&gt;在图3中，在retry或者revoke时primary节点宕机，client_x处在等待的状况下，都会发生无法唤醒client_x的情况&lt;/em&gt;&lt;/p&gt;
+
+&lt;p&gt;还有一个点应当注意的是以下情况：当primary给一个client发送retry时，可能会在此时failure，新的primary也不会再给client发retry，这样这个client会在等待retry时停滞。这里解决的方法比较简单粗暴，就是每隔三秒就发一次，不管retry来没有来。&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;    gettimeofday(&amp;amp;tp, NULL);
+    ts.tv_sec = tp.tv_sec + WAIT_TIMES;
+    ts.tv_nsec = tp.tv_usec * 1000;
+    ret = pthread_cond_timedwait(&amp;amp;lock_item.wait_acq_, &amp;amp;lock_map_mutex_, &amp;amp;ts);
+    if (ret == ETIMEDOUT) lock_item.is_retried = true;
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;这样，另一方的client也许会收到很多revoke的信息，即使当它已经不再拥有此锁。不过还好，有xid，我们可以判断这个lock到底应当怎样处理。&lt;/p&gt;
+
+&lt;h2 id=&quot;id-step-five-complicated-failures&quot;&gt;Step Five: Complicated Failures&lt;/h2&gt;
+&lt;p&gt;此step没有需要做的一些实质性操作，在指定的位置加入breakponit 和 parition1 进行测试。需要测试./rsm_tester.pl 12 13 14 15 16&lt;/p&gt;
+</content>
+  </entry>
+  
+  <entry>
+    <title>6.824:Lab4-5 Cache</title>
+    <link href="//2018/05/22/6.824-Lab4-5-Cache.html"/>
+    <updated>2018-05-22T00:00:00+08:00</updated>
+    <id>//2018/05/22/6.824:Lab4-5-Cache</id>
+    <content type="html">&lt;h1 id=&quot;id-lab4-5-caching-locks-and-extents&quot;&gt;Lab4-5 Caching Locks and Extents&lt;/h1&gt;
+&lt;h2 id=&quot;id-introductionlab4&quot;&gt;Introduction(Lab4)&lt;/h2&gt;
+&lt;p&gt;在这两个实验中，主要建立了锁和存储服务的缓存，以减少服务器负载并提高客户端的性能。&lt;/p&gt;
+
+&lt;p&gt;例如在Lab3中的测试，在一个YFS文件夹中建立100个文件，需要像这个文件夹（directory）的锁请求100次。这次的实验就是修改锁服务，让锁客户端只需要发送一次acquire RPC，把这个锁保存在缓存中，直到有其他的yfs_client需要再释放。&lt;/p&gt;
+
+&lt;p&gt;这次的挑战需要修改客户端和服务器端的协议。例如当client2 需要某个被client1缓存在其本地的锁，需要服务通过revoke RPC revoke（找不出比较合适的词翻译） client1 的那个锁，返还给server。client2 才能够得到。&lt;/p&gt;
+
+&lt;h2 id=&quot;id-getting-startedlab4&quot;&gt;Getting Started(Lab4)&lt;/h2&gt;
+&lt;p&gt;需要改动的文件有：&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;lock_client_cache.{cc,h}:这两个文件替换以前的lock_client文件，主要实现客户端缓存。&lt;/li&gt;
+  &lt;li&gt;lock_server_cache.{cc,h}:同样的，代替以前的lock_server文件，实现对应的锁缓存服务&lt;/li&gt;
+  &lt;li&gt;handle.{cc,h}:这个类主要包含了缓存节点之间的通信RPC，使用revoke和retry时使用。&lt;/li&gt;
+  &lt;li&gt;tprintf.h:这个文件包含了一个宏，用来打印很多debug的信息，尤其是在分布式锁的调试中起到了很关键的作用。&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h2 id=&quot;id-step-one-design-the-protocollab4&quot;&gt;Step One: Design the Protocol(Lab4)&lt;/h2&gt;
+
+&lt;p&gt;锁客户端需要对每一个锁记录其状态，并要有一个协议来表示他们目前的状态。设计这套协议，并思考协议怎样促使这些状态转换。
+这是推荐的一套客户端协议：&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;none      ：客户端不知道这个锁的存在&lt;/li&gt;
+  &lt;li&gt;free      ：客户端拥有此锁并且也没有线程使用此锁&lt;/li&gt;
+  &lt;li&gt;locked    ：客户端拥有此锁，并且有线程在使用此锁&lt;/li&gt;
+  &lt;li&gt;aquiring  ：客户端正在请求此锁&lt;/li&gt;
+  &lt;li&gt;releasing ：客户端正在释放此锁&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;状态转移图如图[1]所示:&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/distribution_pic/state_machine.png&quot; alt=&quot;image&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;em&gt;图[1] 整体系统结构。灰色圆圈中是每一个锁的状态。箭头上的时状态转移的条件。比如acq请求，release释放，revoke，retry 的远程调用等&lt;/em&gt;&lt;/p&gt;
+
+&lt;p&gt;为了满足这个记录客户端的这些信息，每个锁的结构需要重新规划。如下所示：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;class ClientLock{
+  public:
+	pthread_cond_t wait_acq_;
+	pthread_cond_t wait_free_;
+	bool is_retried;
+	bool is_revoked;
+	bool is_finished;
+	AcqRet::lock_status status;
+	ClientLock():
+	    is_retried(false),
+	    is_revoked(false),
+	    is_finished(false),
+	    status(AcqRet::NONE){
+	    pthread_cond_init(&amp;amp;wait_acq_, NULL);
+	    pthread_cond_init(&amp;amp;wait_free_, NULL);
+	}
+};
+class AcqRet {
+public:
+	enum status {OK = 0, RETRY};
+	enum lock_status {NONE, FREE, LOCK, RELEASING, ACQING};
+};
+
+lock_protocol::status
+lock_client_cache::acquire(lock_protocol::lockid_t lid)
+{
+  int ret = lock_protocol::OK;
+  ScopeLock map_lock(&amp;amp;lock_map_mutex_);
+  ClientLock &amp;amp;lock_item = m_lock_map_[lid];
+  bool  is_used = false;
+  while(!is_used){
+    tprintf(&quot;lock_item.status is %d\n&quot;, lock_item.status);
+	switch(lock_item.status)
+	{
+	  case AcqRet::NONE:
+	      DealWithStatusNONE(lock_item, lid);
+		  break;
+	  case AcqRet::FREE:
+	      DealWithStatusFREE(lock_item, lid);
+	      is_used = true;
+		  break;
+	  case AcqRet::LOCK:
+	      DealWithStatusLOCK(lock_item, lid);
+		  break;
+	  case AcqRet::ACQING:
+	      DealWithStatusACQ(lock_item, lid);
+		  break;
+	  default:
+		VERIFY(false);
+	}
+  }
+  return ret;
+}
+
+void lock_client_cache::DealRelease(ClientLock &amp;amp; lock_item, lock_protocol::lockid_t lid)
+{
+    if (lock_item.status == AcqRet::NONE) return;
+    if (lock_item.is_revoked){
+        int r;
+        lock_item.status = AcqRet::NONE;
+        lock_item.is_finished = false;
+        lock_item.is_revoked = false;
+        pthread_mutex_unlock(&amp;amp;lock_map_mutex_);
+        lu-&amp;gt;dorelease(lid);
+        lock_protocol::status ret = cl-&amp;gt;call(lock_protocol::release, lid, id, r);
+        tprintf(&quot;I send it %llu back to server\n&quot;, lid);
+        VERIFY(ret == lock_protocol::OK);
+        pthread_mutex_lock(&amp;amp;lock_map_mutex_);
+    }else{
+        lock_item.status = AcqRet::FREE;
+        lock_item.is_finished = true;
+    }
+    pthread_cond_broadcast(&amp;amp;lock_item.wait_free_);
+    pthread_cond_broadcast(&amp;amp;lock_item.wait_acq_);
+}
+void lock_client_cache::DealWithStatusACQ(ClientLock &amp;amp; lock_item, lock_protocol::lockid_t lid)
+{
+    if (lock_item.is_retried){
+        SendAcqToSvr(lock_item, lid);
+        tprintf(&quot;I am here retried 1\n&quot;);
+    }
+    while(lock_item.status == AcqRet::ACQING &amp;amp;&amp;amp; !lock_item.is_retried){
+        tprintf(&quot;I am waiting here\n&quot;);
+        pthread_cond_wait(&amp;amp;lock_item.wait_acq_, &amp;amp;lock_map_mutex_);
+    }
+    if (lock_item.is_retried &amp;amp;&amp;amp; lock_item.status == AcqRet::ACQING){
+        SendAcqToSvr(lock_item, lid);
+        tprintf(&quot;I am here retried 2\n&quot;);
+    }
+}
+void lock_client_cache::DealWithStatusFREE(ClientLock &amp;amp; lock_item, lock_protocol::lockid_t lid)
+{
+    lock_item.is_finished = false;
+     lock_item.status = AcqRet::LOCK;
+}
+void lock_client_cache::DealWithStatusLOCK(ClientLock &amp;amp; lock_item, lock_protocol::lockid_t lid)
+{
+    while(lock_item.status == AcqRet::LOCK){
+        pthread_cond_wait(&amp;amp;lock_item.wait_free_, &amp;amp;lock_map_mutex_);
+    }
+}
+void lock_client_cache::DealWithStatusNONE(ClientLock &amp;amp; lock_item, lock_protocol::lockid_t lid)
+{
+
+    SendAcqToSvr(lock_item, lid);
+}
+
+int lock_client_cache::SendAcqToSvr(ClientLock &amp;amp; lock_item, lock_protocol::lockid_t lid){
+    int r;
+    lock_item.is_retried  = false;
+    pthread_mutex_unlock(&amp;amp;lock_map_mutex_);
+    int ret = cl-&amp;gt;call(lock_protocol::acquire, lid, id, r);
+    pthread_mutex_lock(&amp;amp;lock_map_mutex_);
+    tprintf(&quot;I am send a msg to svr, ret=%d\n&quot;, ret);
+    if (ret == AcqRet::OK){
+        lock_item.status = AcqRet::FREE;
+    } else if (ret) {
+        lock_item.status = AcqRet::ACQING;
+    } else {
+        tprintf(&quot;unknow svr return %d\n&quot;, ret);
+    }
+    return ret;
+
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;一个单独的客户端可能有多个线程等待相同的锁，但是每个客户端只有一个线程需要与server互动（interacting）。一旦某个有锁的线程释放掉此锁，那么就会唤醒那些等待这个所的其余线程。在等待的这些锁中，会有一个获得此锁。&lt;/p&gt;
+
+&lt;p&gt;当一个client通过acquire RPC请求server时，如果此锁没有被任何client占有时，server返回 OK ，如果此锁被某个client占有时，返回RETRY。同时，server发送一个revoke给占有此锁的client，让他交出这个锁。当这个锁归还给server时，再向请求这个锁的client发出retry RPC，让它重新请求这个锁。如下图所示：&lt;/p&gt;
+
+&lt;p&gt;一旦某个client获得了这个锁，client将会缓存此锁（cache，占有）。当他使用晚此锁时，不用release给server，如果这个client再需要acquire此锁时，就不需要向server请求了，从而减少了网络请求，提高了效率。知道有其他的client进行锁请求时，此client才（并且必须）交还此锁给server。&lt;/p&gt;
+
+&lt;p&gt;服务器端应该思考怎样保存锁信息，出了是否locked这种信息，还需要保存比如每一个锁现在被谁占（cached），哪些clients正在等待此锁的释放等。&lt;/p&gt;
+
+&lt;p&gt;服务端处理如图[2]所示:&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/distribution_pic/lock_cache.png&quot; alt=&quot;image&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;em&gt;图[2] 黑色为锁服务器在有缓存下的处理方式，红蓝为客户端，此图模拟了当锁遇到竞争时的状况，A先得锁，B等锁释放&lt;/em&gt;&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;struct CondLockCache : public CondLock{
+	CondLockCache() {
+	}
+	~CondLockCache() {
+	}
+	std::string user_id_;       //lab4 add
+};
+
+//record which clints are waiting for this lock releasing
+std::map&amp;lt;lock_protocol::lockid_t, std::queue&amp;lt;std::string&amp;gt; &amp;gt; m_retry_queue_; 
+
+int lock_server_cache::acquire(lock_protocol::lockid_t lid, std::string id, 
+                               int &amp;amp;r)
+{
+      AcqRet::status ret;
+	  ScopeLock map_lock(&amp;amp;m_lock_mutex_);
+	  CondLockCache&amp;amp; lock_item =  m_map_lock_[lid];
+	  if (lock_item.is_locked == false){
+		  lock_item.is_locked = true;
+		  lock_item.user_id_ = id;
+		  ret = AcqRet::OK;
+	  }else{
+		  VERIFY (!lock_item.user_id_.empty());
+		  pthread_mutex_lock(&amp;amp;m_retry_mutex_);
+		  m_retry_queue_[lid].push(id);
+		  pthread_mutex_unlock(&amp;amp;m_retry_mutex_);
+		  //ConnectToClient conn_c(lock_item.user_id_);
+		  ret = AcqRet::RETRY;
+		  pthread_mutex_unlock(&amp;amp;m_lock_mutex_);
+		  int ret_r;
+		  ret_r = handle(lock_item.user_id_).safebind()-&amp;gt;call(rlock_protocol::revoke, lid, r);
+		  if (ret_r != rlock_protocol::OK) tprintf(&quot;rlock_protocol::revoke failed!!\n&quot;);
+	  }
+  return ret;
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;在锁服务的acquire大致逻辑是，先判断此锁是否被锁，如果没有，直接返回OK，如果有，记录此客户端ID（IP：PORT）放入retry等待队列。随后像拥有此锁的客户端发送revoke，让其归还此锁。&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;lock_protocol::status
+lock_server_cache::release(lock_protocol::lockid_t lid, std::string id, 
+         int &amp;amp;r)
+{
+  tprintf(&quot;%s send %llu to server\n&quot;, id.c_str(), lid);
+  lock_protocol::status ret = lock_protocol::OK;
+  ScopeLock map_lock(&amp;amp;m_lock_mutex_);
+  if (m_map_lock_.count(lid) &amp;lt;= 0){
+	  tprintf(&quot;lid is not acquired by anyone, why do you release?\n&quot;);
+  }
+  CondLockCache&amp;amp; lock_item =  m_map_lock_[lid];
+  lock_item.is_locked = false;
+  ScopeLock retry_lock(&amp;amp;m_retry_mutex_);
+  std::queue&amp;lt;std::string&amp;gt; &amp;amp;rty_q = m_retry_queue_[lid];
+  tprintf(&quot;now the retry queue size is %zu\n&quot;, rty_q.size());
+  if (!rty_q.empty()){
+      int ret_r;
+	  std::string user_id = rty_q.front();
+	  rty_q.pop();
+	  //ConnectToClient conn_c(user_id);
+	  pthread_mutex_unlock(&amp;amp;m_lock_mutex_);
+	  pthread_mutex_unlock(&amp;amp;m_retry_mutex_);
+	  ret_r = handle(user_id).safebind()-&amp;gt;call(rlock_protocol::retry, lid, r);
+	  if (ret_r != rlock_protocol::OK) tprintf(&quot;rlock_protocol::retry failed!!\n&quot;);
+	  pthread_mutex_lock(&amp;amp;m_lock_mutex_);
+	  pthread_mutex_lock(&amp;amp;m_retry_mutex_);
+	  if(!rty_q.empty()){
+	    pthread_mutex_unlock(&amp;amp;m_lock_mutex_);
+        pthread_mutex_unlock(&amp;amp;m_retry_mutex_);
+        ret_r = handle(user_id).safebind()-&amp;gt;call(rlock_protocol::revoke, lid, r);
+        if (ret_r != rlock_protocol::OK) tprintf(&quot;rlock_protocol::revoke failed!!\n&quot;);
+        pthread_mutex_lock(&amp;amp;m_lock_mutex_);
+        pthread_mutex_lock(&amp;amp;m_retry_mutex_);
+	  }
+  }
+  return ret;
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;还锁时，查看等待队列，如果有等待发送retry给等待Client_X。这里需要注意：⚠️&lt;strong&gt;如果等待队列里还有等待此锁的客户端，要事先发送revoke给 Client_X，虽然它还没有拿到此锁，因为如果不这样，就再没有客户会请求此锁，也不会有revoke发送给Client_X&lt;/strong&gt;&lt;/p&gt;
+
+&lt;p&gt;这里的user_id 直接记录了当前锁持有client的IP和port 同样在m_retry_queue_这个map中 queue中的string也是IP：PORT的形式，使用这样的方式第一能够保证唯一性，第二方便。
+提示：当发送RPC时，要释放目前占有的锁，一个RPC可能维持的时间较长，如果你不希望其他的线程跟着一起等的话，就将它们释放掉。而且不释放还会导致分布式死锁。&lt;/p&gt;
+
+&lt;p&gt;下列两个问题能够帮助你思考和设计：&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;当一个client的线程保持一个锁，另一个线程发出acquire请求时，将会发生什么？这时时不会发送rpc请求的。&lt;/li&gt;
+  &lt;li&gt;当一个客户端持有锁时，revoke请求应当怎样处理？当一个client在收到acquire的反馈之前收到了retry，该怎么办？&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;提示：当一个client在收到acquire的反馈之前收到了retry，client应当记下这个请求，如果忽视了这个retry，如果你的acquire收到的是RETRY的话，client将永远陷入等待之中。（因为server不会再发送retry）&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;当一个client在收到acquire的反馈之前收到了revoke，该怎么办？记录起来（跟记录retry一样），返回OK，使用完这个锁后立即归还给server，不要做缓存。（因为server同样不会再发送revoke，此client以为没有其他clients需要，一直不肯归还，其他clients一直饥饿）&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h2 id=&quot;id-introductionlab5&quot;&gt;Introduction(Lab5)&lt;/h2&gt;
+&lt;p&gt;接下来要做的是对extents，也就是存储数据的服务实现缓存。原因与第一个锁缓存服务一样，都是为了减小开销，增加性能。最主要的任务就是要确保extents缓存下，某个client最终处理的某个数据，是上一个client在处理完后的结果。（不能在处理相同的数据时，各处理各的数据）。&lt;/p&gt;
+
+&lt;p&gt;首先需要在client端添加一个本地的extent存储做cache。extent 客户端将再这个基础上对cache进行操作，同时客户端只有在没有某个extent并获取extent或者属性（attr）时访问extent服务器，并在其他extent客户端需要访问修改的时候将脏数据回写入extent服务器。与锁缓存服务有异曲同工之妙！&lt;/p&gt;
+
+&lt;h2 id=&quot;id-step-oneextent-cachelab5&quot;&gt;Step One:Extent Cache(Lab5)&lt;/h2&gt;
+&lt;p&gt;在第一步中，需要做一个带缓存的extent 客户端，不用考虑数据的一致性。首先新的extent_client::get应该检查客户端是否已经在本地的cache中，如果不在，访问extent服务器，将数据取回来，缓存在自己的数据库中。如果在，直接返回。put()函数中，直接替换cached中的数据，没有必要将已经修改的数据（脏数据）传给服务器，保存在缓存中。remove()应该删除本地的extent服务器。同样extent客户端应当记录一个数据的属性。&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;class FileData {
+ public:
+    FileContent file_content_;
+    bool is_present;
+    bool is_dirty;
+
+    FileData():
+        is_present(false),
+        is_dirty(false)
+    {}
+};
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;这是extent_client中extent的数据结构，除了以前的file content结构之外，添加了&lt;code&gt;is_present&lt;/code&gt;,&lt;code&gt;is_dirty&lt;/code&gt;两个标记。一个表示是否在本地cache中，一个表示已经修改，需要将脏数据回写入extent服务器。&lt;/p&gt;
+&lt;h2 id=&quot;id-step-twocache-consistencylab5&quot;&gt;Step Two:Cache Consistency(Lab5)&lt;/h2&gt;
+&lt;p&gt;在第二步中，要确保每一个get()请求请求到的数据时最近的put()改动过的数据，即使get与put的调用方时两个不同的extent客户端。extent客户端和锁服务相互合作以确保每一个inum（indoe）中的数据是一致的。当你释放锁的时候，要flush一下extent对应的inum数据，即回写入extent脏数据以更新extent服务器数据。（如果remove了，直接删了extent服务中对应的数据就好）&lt;/p&gt;
+
+&lt;p&gt;假设clientA请求了锁inum，从extent服务器上get了对应的文件数据并在客户端自己的cache中修改了数据，当前clientA即缓存着锁服务的锁，也缓存着extent服务的数据。那么当clientB想要访问这份数据时，首先要拿到client缓存的锁，所以clientA要现将脏数据写入extent服务器中（返还这份数据），再释放对应的锁。这样clientB就能够看到clientA修改完后的数据了。&lt;/p&gt;
+
+&lt;p&gt;这里还需要注意使用锁的两个目的：&lt;/p&gt;
+&lt;ol&gt;
+  &lt;li&gt;确保文件系统中的每一个操作的原子性&lt;/li&gt;
+  &lt;li&gt;完成了extent缓存的一致性&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;p&gt;确保每一个yfs_client对extent的操作包含在acquire和release请求中。&lt;/p&gt;
+
+&lt;p&gt;YFS服务应当在释放锁到锁服务器上的时候再调用flush，而不是释放锁的时候。不要每一次调用lock_client::release()flush，而是要在lock_client调用&lt;code&gt;cl-&amp;gt;call(lock_protocol::release, lid, id, r);&lt;/code&gt;即真正返还锁给锁服务器时（锁服务向该client调用revoke时）再调用。否则就有些矫枉过正了。&lt;/p&gt;
+
+&lt;p&gt;在这里，实验环境提供了lock_release_user类，这是一个虚类仅仅支持dorelease的成员方法。我们需要实现一个通过调用dorelease能够调用flush的子类。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;extent_protocol::status
+extent_client_cache::get(extent_protocol::extentid_t eid, std::string &amp;amp;buf)
+{
+  extent_protocol::status ret = extent_protocol::OK;
+  if (extent_file_cache_[eid].is_present){
+      time_t now = time(0);
+      extent_file_cache_[eid].file_content_.first.atime = static_cast&amp;lt;int&amp;gt;(now);
+      buf = extent_file_cache_[eid].file_content_.second;
+  }else{
+    extent_protocol::attr &amp;amp;attr = extent_file_cache_[eid].file_content_.first;
+    ret = cl-&amp;gt;call(extent_protocol::get, eid, buf);
+    ret = cl-&amp;gt;call(extent_protocol::getattr, eid, attr);
+    extent_file_cache_[eid].is_present = true;
+    extent_file_cache_[eid].file_content_.second = buf;
+  }
+  return ret;
+}
+
+extent_protocol::status
+extent_client_cache::getattr(extent_protocol::extentid_t eid,
+               extent_protocol::attr &amp;amp;attr)
+{
+  extent_protocol::status ret = extent_protocol::OK;
+  if (extent_file_cache_[eid].is_present){
+      attr = extent_file_cache_[eid].file_content_.first;
+  } else {
+      ret = cl-&amp;gt;call(extent_protocol::getattr, eid, attr);
+  }
+  return ret;
+}
+
+extent_protocol::status
+extent_client_cache::put(extent_protocol::extentid_t eid, std::string buf)
+{
+  extent_protocol::status ret = extent_protocol::OK;
+  time_t now = time(0);
+
+  std::map&amp;lt;uint64_t, FileData&amp;gt;::iterator file_cache_it = extent_file_cache_.find(eid);
+  if (file_cache_it == extent_file_cache_.end()){
+      extent_file_cache_[eid].file_content_.first.atime = static_cast&amp;lt;int&amp;gt;(now);
+  }
+  extent_file_cache_[eid].file_content_.first.mtime = static_cast&amp;lt;int&amp;gt;(now);
+  extent_file_cache_[eid].file_content_.first.ctime = static_cast&amp;lt;int&amp;gt;(now);
+  //int r;
+  //ret = cl-&amp;gt;call(extent_protocol::put, eid, buf, r);
+  extent_file_cache_[eid].file_content_.first.size = buf.size();
+  extent_file_cache_[eid].file_content_.second = buf;
+  extent_file_cache_[eid].is_dirty = true;
+  extent_file_cache_[eid].is_present = true;
+  return ret;
+}
+
+extent_protocol::status
+extent_client_cache::remove(extent_protocol::extentid_t eid)
+{
+  extent_protocol::status ret = extent_protocol::OK;
+  std::map&amp;lt;uint64_t, FileData&amp;gt;::iterator file_cache_it = extent_file_cache_.find(eid);
+  if (file_cache_it != extent_file_cache_.end()){
+      extent_file_cache_.erase(file_cache_it);
+  }else{
+      int r;
+      ret = cl-&amp;gt;call(extent_protocol::remove, eid, r);
+  }
+
+  return ret;
+}
+
+extent_protocol::status extent_client_cache::flush(extent_protocol::extentid_t eid)
+{
+    extent_protocol::status ret = extent_protocol::OK;
+    std::map&amp;lt;uint64_t, FileData&amp;gt;::iterator file_cache_it = extent_file_cache_.find(eid);
+    if (file_cache_it == extent_file_cache_.end()){
+        int r;
+        ret = cl-&amp;gt;call(extent_protocol::remove, eid, r);
+        return ret;
+    }
+
+    if (file_cache_it-&amp;gt;second.is_dirty){
+        int r;
+        std::string &amp;amp;buf = file_cache_it-&amp;gt;second.file_content_.second;
+        ret = cl-&amp;gt;call(extent_protocol::put, eid, buf, r);
+        tprintf(&quot;put %d back to server, ret=%d\n&quot;, eid, ret);
+    }
+    extent_file_cache_[eid].is_dirty   = false;
+    extent_file_cache_[eid].is_present = false;
+    return ret;
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;在缓存实验后，我们可以打开rpc的记录日志（在环境中设置 &lt;code&gt;
+export RPC_COUNT=25&lt;/code&gt;
+）,它会记录所有rpc请求的数量。在通过执行test-lab-3-c,可以观察在加缓存和没有缓存情况下，客户端请求服务器的次数。实验手册上说如果设计得当，锁服务的请求会降低10倍（很惭愧，只降低了3倍）。其他的请求次数也会有大幅度下降。图[3]为实验对比：&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/distribution_pic/cache_perform.png&quot; alt=&quot;image&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;em&gt;图[3]acq没有试验手册下降的多，release到是下降了10倍左右，在extent的试验中，Put和remove下降最大，Get与GetAttr下降明显。GetInum因为没有做缓存，而且在我做实验中设计的不好，随机生成，不太方便做缓存，所以也就没下降&lt;/em&gt;&lt;/p&gt;
+
+&lt;h2 id=&quot;id-hints&quot;&gt;Hints&lt;/h2&gt;
+
+&lt;ul&gt;
+  &lt;li&gt;确保使用线程mutex来保护客户端的extent cache，防止多线程资源竞争。&lt;/li&gt;
+  &lt;li&gt;如果你对extent中的某个data只是做了只读（read-only）的操作，久不要将这一数据flush入extent服务器了，应该使用一个标记位来记录数据是否被修改（&lt;code&gt;is_dirty&lt;/code&gt;）&lt;/li&gt;
+  &lt;li&gt;这个实现可以不怎么修改yfs_client.cc这一文件，可以通过继承client_extent的方式，实现extent_client_cache，重新定义put get等方式。（因为yfs_client调用extent的方式是指针，这一点实验设计的很巧妙）&lt;/li&gt;
+&lt;/ul&gt;
+</content>
+  </entry>
+  
+  <entry>
+    <title>6.824:Lab2-3 FileSystem</title>
+    <link href="//2018/05/22/6.824-Lab2-3-FileSystem.html"/>
+    <updated>2018-05-22T00:00:00+08:00</updated>
+    <id>//2018/05/22/6.824:Lab2-3-FileSystem</id>
+    <content type="html">&lt;h1 id=&quot;id-lab2-3-file-server&quot;&gt;Lab2-3 File Server&lt;/h1&gt;
+&lt;h2 id=&quot;id-introductionlab2&quot;&gt;Introduction(Lab2)&lt;/h2&gt;
+&lt;p&gt;在这个实验中，将使用FUSE的接口完成一个文件系统&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;CREATE／MKNOD， LOOKUP， 和 READDIR&lt;/li&gt;
+  &lt;li&gt;SETTATTR，WRITE，READ&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;这些操作是完成一个文件系统的最根本的几个操作之一。使用下图的架构。&lt;/p&gt;
+
+&lt;p&gt;我们将提供YFS和extent服务器模块的基本框架,如图[1]所示。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/distribution_pic/system_architecture.png&quot; alt=&quot;image&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;em&gt;图[1] 整体系统结构&lt;/em&gt;&lt;/p&gt;
+
+&lt;p&gt;YFS模块时实现文件系统基本核心逻辑的模块，这一模块最后被编译为一个yfs_client支持本地挂载的文件系统。这一模块的代码框架由两部分组成：&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;&lt;strong&gt;FUSE 接口&lt;/strong&gt;，在这个fuse.cc中，这个代码将FUSE操作从内核模块变为了YFS客户端调用。实验已经提供给了FUSE内核的注册操作，需要做的是，修改fuse.cc使其能够正确地调用yfs_client提供的成员方法，再通过FUSE接口返回。&lt;/li&gt;
+  &lt;li&gt;&lt;strong&gt;YFS 客户端&lt;/strong&gt;，在yfs_client.{cc,h}。YFS clients使用extent和lock服务实现了分布式文件系统的主要逻辑。例如当创建一个新的文件时，你的yfs_client就要在目录数据中增加一个目录项（item）在extent服务器中，这一模块是调用方，即为客户端，而不是想文件服务器，活着时锁服务器一样的服务器。（fuse-&amp;gt;yfs_client-&amp;gt;extent client-&amp;gt; extent server），如图[2]所示。 
+  &lt;img src=&quot;/images/distribution_pic/yfs_client.png&quot; alt=&quot;image&quot; /&gt;
+&lt;em&gt;如图[2] 整体客户端结构，exe代表操作系统上运行的可执行文件，比如touch，ls等&lt;/em&gt;&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;extent服务器存储着文件系统所有的数据，像是在二进制文件中的硬盘的作用。在随后的实验中，你将在多个主机上运行YFSclient，他们都使用一个公共的extent服务，这也就意味着所有的主机使用着和共享着相同的数据。extent服务器代码框架包含有两个方面：&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;&lt;strong&gt;Extent客户端&lt;/strong&gt; 在extent_client.{cc.h}封装了与extent服务器通行的RPC。&lt;/li&gt;
+  &lt;li&gt;&lt;strong&gt;Extent服务器&lt;/strong&gt; 在extent_server.{cc.h}和extent_smain，extent服务器管理了一个简单的K-V存储，它使用extent_protocol::extentid_t作为Keys，V包含两个方面，使用string作为存储的数据类型，使用一个结构体包换这个数据的属性（attr）。服务器包含四个方法：put(k,v), v_s get(k), v_a getattr(k), remove(k).&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h2 id=&quot;id-getting-started&quot;&gt;Getting Started&lt;/h2&gt;
+&lt;p&gt;首先给电脑的操作系统安装FUSE库（详见&lt;a href=&quot;https://pdos.csail.mit.edu/archive/6.824-2012/labs/index.html&quot;&gt;实验概述&lt;/a&gt;）&lt;/p&gt;
+
+&lt;p&gt;框架代码仅仅实现了GETATTR和STATFS这两个接口，所以刚开始挂载的文件系统是不能够正常使用的。实验将完善文件系统中更多的FUSE的操作&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;第一部分：应当完成CREATE/MKNOD,LOOKUP,和READDIR。代码应当通过test-lab-2-a.pl这一脚本。这个脚本主要的测试项是创建空文件，在目录中查询文件名，列出目录中的文件内容。&lt;/li&gt;
+  &lt;li&gt;第二部分：需要实现SETATTR，READ和WRITE，你的代码应当通过test-lab-2-b.pl这一脚本。这个脚本的主要测试读，写追加文件。还测试文件是否能够在一个客户端创建，在另一个客户端读取。
+确保你在Linux操作的系统的用户在FUSE的用户组中，这样才能够操作FUSE格式的文件系统。&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h2 id=&quot;id-part1createmknod-lookup-and-readdir&quot;&gt;PART1:CREATE/MKNOD, LOOKUP, and READDIR&lt;/h2&gt;
+&lt;h3 id=&quot;id-your-job&quot;&gt;your job&lt;/h3&gt;
+&lt;p&gt;在第一部分的工作是实现一个extent服务（存储服务），然后实现CREATE NKNOD，LOOKUP和READDIR 的FUSE文件操作。必须使用extent服务器来存储文件系统的内容，这样才能够完成part2中共享数据以及后续的实验。当然可以将extent的存储放在内存中（我就只使用了c++ 的map），只是一旦关闭extent服务器，所有的数据就都丢失了。&lt;/p&gt;
+
+&lt;p&gt;在一些系统中，FUSE使用MKNOD创建文件，在另一些系统中，使用CREATE。这两个接口有一些小区别，但是为了方便，我们提供了一个createhelper()接口，MKNOD或者CREATE接口都wrap了这个接口。实验所要做的工作就是实现createhelper()方法。&lt;/p&gt;
+
+&lt;h3 id=&quot;id-step-one&quot;&gt;Step One&lt;/h3&gt;
+&lt;ul&gt;
+  &lt;li&gt;实现extent服务器：需要再extent_server.cc中实现这个服务。一共有四个操作put(k,v), get(k), getattr(k)和remove(k)。put和getRPC被用作更新和获取数据（extent的content）。getattrRPC获取数据的“属性”，属性包含了数据最后修改时间（mtime），最后改变属性的时间（ctime）和最后获取数据的时间（atime）。时间以秒作为单位从1970年起计算（unix时间戳）。attribute有点像unix系统的i-node。你可以使用转本的attribue存数，不用像inode一样将元数据和数据都存储在里边。当调用put()时，ctime和mtime一样改变。调用get()时，atime会改变。&lt;/li&gt;
+  &lt;li&gt;
+    &lt;p&gt;文件/目录 ID&lt;/p&gt;
+
+    &lt;p&gt;YFS和FUSE都需要一个能够辨识唯一的标识符，如果UNIX文件系统中的inode标号。FUSE使用32-bit作为标识符，你的YFS应当使用64-bit的数字作为标识符，其中高32位为0，低32位作为文件/目录的ID，在这个系统里，标识符在yfs_client.h成为inum。&lt;/p&gt;
+
+    &lt;p&gt;当创建一个新的文件（使用fuseserver_createhelper）或者文件（fuseserver_mkdir），你不必分配一个inum，简单点地做法就是随机取一个数组，只要不重复就可以但要考虑当文件和目录不断增加时，冲突的概率。（我刚开始想学unix做bitmap，后来做到客户端了。。。所以这里偷了个懒，就使用随机数生成，使用map count作为判断是否冲突。）&lt;/p&gt;
+    &lt;pre&gt;&lt;code&gt;  int extent_server::GetInodeNum(int is_file, extent_protocol::extentid_t&amp;amp; rino){
+  	extent_lock ex_lc(&amp;amp;pmutex_file_block_map_);
+  	extent_protocol::extentid_t ino;
+  	struct timeval tv;
+  	gettimeofday(&amp;amp;tv,NULL);
+  	srand(tv.tv_usec);
+  	do{
+  		ino = rand() % 0x80000000LLU;
+  		if (ino == 1)
+  			continue;
+  		if(is_file){
+  			ino |= 0x80000000LLU;
+  		}
+  	}while(file_block_.count(ino) &amp;gt; 0);
+  	rino = ino;
+  	return extent_protocol::OK;
+  }
+&lt;/code&gt;&lt;/pre&gt;
+
+    &lt;p&gt;YFS需要通过inum来区分哪一个是文件数据，哪一个是目录数据。这里使用31bit作为inum号进行分配。这里使用&lt;code&gt;yfs_client::isfile&lt;/code&gt;来判断，如果第31位为0，为目录，1为文件。&lt;/p&gt;
+    &lt;pre&gt;&lt;code&gt;  bool
+  yfs_client::isfile(inum inum)
+  {
+    if(inum &amp;amp; 0x80000000)
+      return true;
+    return false;
+  }
+&lt;/code&gt;&lt;/pre&gt;
+  &lt;/li&gt;
+  &lt;li&gt;
+    &lt;p&gt;目录格式：&lt;/p&gt;
+
+    &lt;p&gt;下一个任务就是定义目录的存储结构格式。一个目录数据应当包含目录中名称和这对应inum的映射。当然存储的时候，需要把目录数据转换成一个string存储在extent服务器中。LOOKUP和READDIR读取目录内容，CREATE/MKNOD修改目录内容。以下是我对目录的定义：&lt;/p&gt;
+
+    &lt;pre&gt;&lt;code&gt;  /*
+      *dir_block_：map&amp;lt;FILE_NAME, INUM&amp;gt;
+      *dir_item_num_ :目录项个数
+      *StringToDirForm 将extent的数据 转换成目录结构数据
+      *DirFormToString 将目录结构数据 转化成extent数据
+  */
+  struct DirForm{
+  	std::map&amp;lt;std::string, uint64_t&amp;gt; dir_block_;
+  	int dir_item_num_;
+  	void StringToDirForm(const std::string&amp;amp;);
+  	void DirFormToString(std::string&amp;amp;);
+  };
+  void DirForm::StringToDirForm(const std::string&amp;amp; data){
+  	const char* start = data.data();
+  	std::size_t pos = 0;
+  	dir_item_num_ = *(int *) (start + pos);
+  	printf(&quot;dir_item_num_ = %d\n&quot;, dir_item_num_);
+  	pos += sizeof(int);
+  	for(int i = 0; i &amp;lt; dir_item_num_ &amp;amp;&amp;amp; pos &amp;lt; data.size(); i++) {
+  		std::string item_name;
+  		item_name.assign((char *) (start + pos), MAX_ITEM_NAME_LEN);
+  		pos += MAX_ITEM_NAME_LEN;
+  		uint64_t item_num = *(uint64_t *)(start + pos);
+  		pos += sizeof(uint64_t);
+  		dir_block_.insert(std::make_pair(item_name, item_num));
+  	}
+  }
+
+  void DirForm::DirFormToString(std::string&amp;amp; data){
+  	data.clear();
+  	dir_item_num_ = dir_block_.size();
+  	char a32[4];
+  	memcpy(a32, &amp;amp;dir_item_num_, 4);
+  	data.append(a32, sizeof(dir_item_num_));
+  	typeof(dir_block_.begin()) mit = dir_block_.begin();
+  	for(;mit != dir_block_.end(); mit++){
+  		std::string tmp_str = mit-&amp;gt;first;
+  		tmp_str.resize(MAX_ITEM_NAME_LEN);
+  		data.append(tmp_str.c_str(), MAX_ITEM_NAME_LEN);
+  		char a64[8];
+  		memcpy(a64, &amp;amp;(mit-&amp;gt;second), 8);
+  		data.append(a64, sizeof(mit-&amp;gt;second));
+  	}
+  }
+&lt;/code&gt;&lt;/pre&gt;
+    &lt;p&gt;这里就不需要考虑文件所有者，模式或者是权限等。&lt;/p&gt;
+  &lt;/li&gt;
+  &lt;li&gt;
+    &lt;p&gt;FUSE：&lt;/p&gt;
+
+    &lt;p&gt;当一个程序（像ls或者文本编辑器）在你的yfs_client中操作一个文件或者是目录时，在内核中的代码通过FUSE传递给yfs_client。实验已在fuse.cc中实现了这一接口，比如create，read，write等等操作。你应当在fuse.cc中修改相关的接口，fuse接口中的create调用yfs_client中的create。这个基本的操作可以参考已经实现的gettattr函数。&lt;/p&gt;
+
+    &lt;p&gt;相关的一些方法可以在fuse_lowlevel.h中进行详细的理解，比如FUSE使用fuse_reply把成功的结果返回给内核，通过fuse_reply_err报告一个错误。&lt;/p&gt;
+
+    &lt;p&gt;在通过READDIR读取目录信息的时候，使用了一些trick，我们已经实现了dirbuf_add,reply_buf_limited等方法，你所要做的就是修改FUSE中的READDIR让系统获得这个目录下的目录项。&lt;/p&gt;
+
+    &lt;p&gt;&lt;strong&gt;尽管当你创建新的文件或是目录时，可以随意的使用inum作为标识符，但是FUSE是将0x00000001作为根目录（root）的。因此你应当确保0x00000001这个不会作为普通文件或者目录的inum，因为它已被占用&lt;/strong&gt;&lt;/p&gt;
+  &lt;/li&gt;
+  &lt;li&gt;
+    &lt;p&gt;YFS code：&lt;/p&gt;
+
+    &lt;p&gt;文件系统的主要逻辑应当在yfs_client中完成，因为大部分的操作都是fuse调用yfs_client。fuse只是作为一个handle。在yfs_client中，使用get(inum)从extent服务器获取数据。在目录文件中，要能够将string解析成文件目录结构。&lt;/p&gt;
+  &lt;/li&gt;
+  &lt;li&gt;
+    &lt;p&gt;tips&lt;/p&gt;
+
+    &lt;p&gt;如果一个文件已经存在（filename在相同的目录下重复），CREATE操作就应当返回EEXIST给FUSE。&lt;/p&gt;
+  &lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;pre&gt;&lt;code&gt;//创建文件或目录
+yfs_client::status
+fuseserver_createhelper(fuse_ino_t parent, const char *name,
+                        mode_t mode, struct fuse_entry_param *e)
+{
+  // In yfs, timeouts are always set to 0.0, and generations are always set to 0
+  e-&amp;gt;attr_timeout = 0.0;
+  e-&amp;gt;entry_timeout = 0.0;
+  e-&amp;gt;generation = 0;
+  // You fill this in for Lab 2
+  uint64_t inum;
+  int ret = yfs-&amp;gt;create(parent, name, inum);
+  if (ret != yfs_client::OK) {
+	  return ret;
+  }
+  e-&amp;gt;ino = inum;
+  getattr(inum, e-&amp;gt;attr);
+  printf(&quot;fuseserver_createhelper create item succ!\n&quot;);
+  return yfs_client::OK;
+
+}
+
+yfs_client::status yfs_client::create(uint64_t parent, const char *name, uint64_t&amp;amp; ret_ino){
+	  yfs_client::status ret;
+	  std::string data;
+	  std::string str_name = name;
+	  str_name.resize(MAX_ITEM_NAME_LEN);
+	  printf(&quot;parent id: %lu\n&quot;, parent);
+	  printf(&quot;file name is %s\n&quot;, str_name.c_str());
+	  YfsLock yl(lc, parent);
+	  ret = getdata(parent, data);
+	  if (ret != yfs_client::OK){
+		  return yfs_client::NOENT;
+	  }
+	  DirForm dir_info;
+	  dir_info.StringToDirForm(data);
+	  if (dir_info.dir_block_.count(str_name) &amp;gt; 0) {
+		  return yfs_client::EXIST;
+	  }
+	  ret_ino = GetAvailInum(true);
+	  printf(&quot;fuseserver_createhelper ino:%lu\n&quot;, ret_ino);
+	  if (ret_ino == 0) {
+		  return yfs_client::NOENT;
+	  }
+	  dir_info.dir_block_[str_name] = ret_ino;
+	  dir_info.DirFormToString(data);
+	  ret = putdata(parent, data);
+	  if (ret != yfs_client::OK) {
+		  RestoreInum(ret_ino, true);
+		  return ret;
+	  }
+	  data.clear();
+	  ret = putdata(ret_ino, data);
+	  if (ret != yfs_client::OK){
+		  RestoreInum(ret_ino, true);
+		  return ret;
+	  }
+	  yfs_client::fileinfo info;
+	  ret = getfile(ret_ino, info);
+	  if (ret != yfs_client::OK){
+	  	  RestoreInum(ret_ino, true);
+	  	  return ret;
+	  }
+	  return yfs_client::OK;
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;pre&gt;&lt;code&gt;//LOOKUP操作
+void
+fuseserver_lookup(fuse_req_t req, fuse_ino_t parent, const char *name)
+{
+  struct fuse_entry_param e;
+  // In yfs, timeouts are always set to 0.0, and generations are always set to 0
+  e.attr_timeout = 0.0;
+  e.entry_timeout = 0.0;
+  e.generation = 0;
+  bool found = false;
+
+  // You fill this in for Lab 2
+  yfs_client::status ret = yfs-&amp;gt;lookup(parent, name, found, e.ino);
+  if (ret != yfs_client::OK)
+	  goto lookup_end;
+
+  if(found){
+	  getattr(e.ino, e.attr);
+  }
+ lookup_end:
+
+  if (found)
+    fuse_reply_entry(req, &amp;amp;e);
+  else
+    fuse_reply_err(req, ENOENT);
+}
+yfs_client::status yfs_client::lookup(uint64_t parent, const char *name, bool&amp;amp; found, uint64_t&amp;amp; imun){
+	  DirForm dirinfo;
+	  std::string data;
+	  std::string str_name = name;
+	  str_name.resize(MAX_ITEM_NAME_LEN);
+	  printf(&quot;input name=%s\n&quot;, str_name.c_str());
+	  std::map&amp;lt;std::string, uint64_t&amp;gt;::iterator mit;
+	  YfsLock yl(lc, parent);
+	  if(getdata(parent, data) != yfs_client::OK){
+		  return yfs_client::NOENT;
+	  }
+
+	  dirinfo.StringToDirForm(data);
+	  printf(&quot;fuseserver_lookup dirinfo.dir_block_ size is %lu\n&quot;, dirinfo.dir_block_.size());
+	  mit = dirinfo.dir_block_.begin();
+	  /*
+	  for(;mit != dirinfo.dir_block_.end(); mit++) {
+		  printf(&quot;name:%s,in:%llu\n&quot;,mit-&amp;gt;first.c_str(), mit-&amp;gt;second);
+
+	  }
+	  */
+	  if (dirinfo.dir_block_.count(str_name) &amp;gt; 0){
+		  imun = dirinfo.dir_block_[str_name];
+		  found = true;
+	  }
+	  return yfs_client::OK;
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;pre&gt;&lt;code&gt;\\READDIR
+void
+fuseserver_readdir(fuse_req_t req, fuse_ino_t ino, size_t size,
+                   off_t off, struct fuse_file_info *fi)
+{
+  yfs_client::inum inum = ino; // req-&amp;gt;in.h.nodeid;
+  struct dirbuf b;
+
+  printf(&quot;fuseserver_readdir\n&quot;);
+
+  if(!yfs-&amp;gt;isdir(inum)){
+    fuse_reply_err(req, ENOTDIR);
+    return;
+  }
+
+  memset(&amp;amp;b, 0, sizeof(b));
+
+
+  // You fill this in for Lab 2
+  DirForm dirinfo;
+  yfs_client::status ret = yfs-&amp;gt;readdir(dirinfo, ino);
+  if (ret != yfs_client::OK){
+	  printf(&quot;readdir:yfs-&amp;gt;readdir return %d&quot;, ret);
+  }
+  typeof(dirinfo.dir_block_.begin()) mit = dirinfo.dir_block_.begin();
+  for(;mit != dirinfo.dir_block_.end(); mit++){
+	  dirbuf_add(&amp;amp;b, mit-&amp;gt;first.c_str(), mit-&amp;gt;second);
+  }
+  reply_buf_limited(req, b.p, b.size, off, size);
+  free(b.p);
+}
+yfs_client::status yfs_client::readdir(DirForm&amp;amp; dirinfo, uint64_t inum){
+	;
+	std::string data;
+	YfsLock yl(lc, inum);
+	yfs_client::status ret = getdata(inum, data);
+	if (ret != yfs_client::OK){
+		return ret;
+	}
+	  dirinfo.StringToDirForm(data);
+	  return yfs_client::OK;
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h2 id=&quot;id-part2-settattrreadwritelab2&quot;&gt;PART2 SETTATTR，READ，WRITE（LAB2）&lt;/h2&gt;
+&lt;h3 id=&quot;id-part-2-your-jobs&quot;&gt;Part 2 Your Jobs&lt;/h3&gt;
+&lt;p&gt;在Part中需要实现SETATTR，WRITE，READ等FUSE操作，只要通过了test-lab-2-b.pl Lab2就算是完成了。test-lab-2-b.pl测试了读、写、追加文件，在一个客户端写，查看另一个客户端是否可读。&lt;/p&gt;
+
+&lt;h3 id=&quot;id-part2detailed-guidance&quot;&gt;Part2：Detailed Guidance&lt;/h3&gt;
+
+&lt;ul&gt;
+  &lt;li&gt;
+    &lt;p&gt;实现SETATTR&lt;/p&gt;
+
+    &lt;p&gt;操作系统通过FUSE的SETATTR操作告诉你的文件系统设置文件属性。在to_set参数中设置哪一个需要被设置。目前只有一个文件属性需要注意就是文件大小的属性。设置FUSE_SET_ATTR_SIZE，操作系统也许会通过覆盖写，创建一个已存在的文件。那么就不会通调用FUSE的CREATE，而是SETATTR改变文件size属性。&lt;/p&gt;
+  &lt;/li&gt;
+  &lt;li&gt;
+    &lt;p&gt;实现READ\WRITE&lt;/p&gt;
+
+    &lt;p&gt;READ（fuseserver_read）读一个文件，需要一个读取文件大小的size和从哪里开始的offset作为参数。当size小于文件size时，当读取数据超出了文件范围时，能读多少返回多少可读的数据。在linux系统中使用man 查看read的详细信息。&lt;/p&gt;
+
+    &lt;p&gt;对于WRITE（fuseserver_write）来说，需要一个写入数据大小的size和从哪里开始的offset作为、数据这三个参数。当offset值大于文件原本size的时候，大于的部分全部填充‘\0’。&lt;/p&gt;
+  &lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;pre&gt;&lt;code&gt;yfs_client::status yfs_client::read(uint64_t ino, size_t size, off_t off, std::string &amp;amp;buf){
+	  std::string data;
+	  YfsLock yl(lc, ino);
+	  yfs_client::status ret = getdata(ino, data);
+	  if (ret != yfs_client::OK) {
+		  return yfs_client::NOENT;
+	  }
+	  if ((uint64_t)off &amp;gt;= data.size()) {
+		  buf = &quot;&quot;;
+	  }else if ((off + size) &amp;gt; data.size()){
+		  buf = data.substr(off);
+	  }else{
+		  buf = data.substr(off, size);
+	  }
+	  return yfs_client::OK;
+}
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;pre&gt;&lt;code&gt;yfs_client::status yfs_client::write(uint64_t ino, size_t size, off_t off, const char* buf){
+	  std::string data;
+	  std::string write_data;
+	  YfsLock yl(lc, ino);
+	  yfs_client::status ret = getdata(ino, data);
+	  if (ret != yfs_client::OK) {
+		  return ret;
+	  }
+	  if ((uint64_t)off &amp;gt; data.size()) {
+		  data.resize(off);
+	  }
+	  write_data = data.substr(0, off);
+	  if ((off + size) &amp;gt; data.size()){
+		  write_data.append(buf, size);
+	  } else {
+		  std::string tmp_str(buf, size);
+		  write_data += tmp_str;
+		  write_data += data.substr(off + size);
+	  }
+	  ret = putdata(ino, write_data);
+	  if (ret != yfs_client::OK){
+		  return ret;
+	  }
+	  return ret;
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;pre&gt;&lt;code&gt;yfs_client::status yfs_client::setattr(uint64_t ino, struct stat *attr){
+	  std::string data;
+	  YfsLock yl(lc, ino);
+	  yfs_client::status ret = getdata(ino, data);
+	  if (ret != yfs_client::OK) {
+		  return ret;
+	  }
+	  data.resize(attr-&amp;gt;st_size);
+	  ret = putdata(ino, data);
+	  if (ret != yfs_client::OK) {
+		  return ret;
+	  }
+	  return ret;
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;h2 id=&quot;id-lab3mkdirunlinkand-locking&quot;&gt;Lab3：MKDIR,UNLINK,and Locking&lt;/h2&gt;
+
+&lt;h3 id=&quot;id-introduction&quot;&gt;Introduction&lt;/h3&gt;
+&lt;p&gt;在这个实验中，&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;在FUSE中增加MKDIR和UNLINK操作&lt;/li&gt;
+  &lt;li&gt;在yfs_client中加入锁操作，以确保在同一个目录下，不同用户之间操作不会有冲突&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h3 id=&quot;id-part1mkdirunlink&quot;&gt;Part1：MKDIR,UNLINK&lt;/h3&gt;
+
+&lt;h4 id=&quot;id-your-job-1&quot;&gt;Your Job&lt;/h4&gt;
+&lt;p&gt;这个任务主要是在FUSE中实现MKDIR和UNLINK，确保在MKDIR创建是，标志文件与目录的inum的那个bit位为0。对于MKDIR，你不用在创建每个目录的时候再创建“.”，“..”因为Linux内核对于YFS是透明的。UNLINK只需要删除对应inum的extent即可，不需要实现UNIX系统那样的文件应用计数。&lt;/p&gt;
+
+&lt;p&gt;如果全部通过test-lab-3-a.pl脚本测试，那么就算是完成了part1的内容了。这个测试脚本包含了创建目录，创建删除文件，检查目录extent的mtime和ctime属性。要注意的是测试脚本会检查时间属性的正确性。创建一个文件会同时改变父文件的mtime和ctime。&lt;/p&gt;
+
+&lt;pre&gt;&lt;code&gt;fuseserver_mkdir(fuse_req_t req, fuse_ino_t parent, const char *name,
+     mode_t mode)
+{
+  struct fuse_entry_param e;
+  // In yfs, timeouts are always set to 0.0, and generations are always set to 0
+  e.attr_timeout = 0.0;
+  e.entry_timeout = 0.0;
+  e.generation = 0;
+  // Suppress compiler warning of unused e.
+  //(void) e;
+  // You fill this in for Lab 3
+#if 1
+  yfs_client::status ret = yfs-&amp;gt;mkdir(parent, name, e.ino);
+  if (ret == yfs_client::EXIST) {
+	fuse_reply_err(req, EEXIST);
+	return;
+  }
+
+  if (ret != yfs_client::OK) {
+	fuse_reply_err(req, ENOENT);
+	return;
+  }
+
+  ret = getattr(e.ino, e.attr);
+
+  if (ret != yfs_client::OK) {
+	fuse_reply_err(req, ENOENT);
+	return;
+  }
+
+  fuse_reply_entry(req, &amp;amp;e);
+#else
+  fuse_reply_err(req, ENOSYS);
+#endif
+}
+
+yfs_client::status yfs_client::mkdir(uint64_t parent, const char *name, uint64_t&amp;amp; ret_ino) {
+	  yfs_client::status ret;
+	  std::string data;
+	  std::string str_name = name;
+	  str_name.resize(MAX_ITEM_NAME_LEN);
+	  printf(&quot;parent id: %lu\n&quot;, parent);
+	  printf(&quot;file name is %s\n&quot;, str_name.c_str());
+	  YfsLock yl(lc, parent);
+	  ret = getdata(parent, data);
+	  if (ret != yfs_client::OK){
+		  return yfs_client::NOENT;
+	  }
+	  DirForm dir_info;
+	  dir_info.StringToDirForm(data);
+	  if (dir_info.dir_block_.count(str_name) &amp;gt; 0) {
+		  return yfs_client::EXIST;
+	  }
+	  ret_ino = GetAvailInum(false);
+	  printf(&quot;fuseserver_createhelper ino:%lu\n&quot;, ret_ino);
+	  if (ret_ino == 0) {
+		  return yfs_client::NOENT;
+	  }
+	  dir_info.dir_block_[str_name] = ret_ino;
+	  dir_info.DirFormToString(data);
+	  ret = putdata(parent, data);
+	  if (ret != yfs_client::OK) {
+		  RestoreInum(ret_ino, false);
+		  return ret;
+	  }
+	  data.clear();
+	  ret = putdata(ret_ino, data);
+	  if (ret != yfs_client::OK){
+		  RestoreInum(ret_ino, false);
+		  return ret;
+	  }
+	  yfs_client::fileinfo info;
+	  ret = getfile(ret_ino, info);
+	  if (ret != yfs_client::OK){
+		  RestoreInum(ret_ino, false);
+		  return ret;
+	  }
+	  return yfs_client::OK;
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;pre&gt;&lt;code&gt;void
+fuseserver_unlink(fuse_req_t req, fuse_ino_t parent, const char *name)
+{
+
+  // You fill this in for Lab 3
+  // Success:	fuse_reply_err(req, 0);
+  // Not found:	fuse_reply_err(req, ENOENT);
+
+  yfs_client::status ret = yfs-&amp;gt;unlink(parent, name);
+  if (ret != yfs_client::OK) {
+	fuse_reply_err(req, ENOENT);
+	return;
+  }
+
+  fuse_reply_err(req, 0);
+  return;
+
+  fuse_reply_err(req, ENOSYS);
+}
+
+yfs_client::status yfs_client::unlink(uint64_t parent, const char *name){
+	  yfs_client::status ret;
+	  std::string data;
+	  std::string str_name = name;
+	  str_name.resize(MAX_ITEM_NAME_LEN);
+	  YfsLock yl(lc, parent);
+	  ret = getdata(parent, data);
+	  if (ret != yfs_client::OK){
+		  return yfs_client::NOENT;
+	  }
+	  DirForm dir_info;
+	  dir_info.StringToDirForm(data);
+	  std::map&amp;lt;std::string, uint64_t&amp;gt;::iterator del_mit = dir_info.dir_block_.find(str_name);
+	  //printf(&quot;unlink str-name:%s\n, parent is %llu\n&quot;, str_name.c_str(), parent);
+	  if (del_mit == dir_info.dir_block_.end()) {
+		  return yfs_client::NOENT;
+	  }
+	  uint64_t ino = del_mit-&amp;gt;second;
+	  //printf(&quot;yfs_client::unlink ino:%ullX\n&quot;, ino);
+	  if (!isfile(ino)) {
+		  return yfs_client::NOENT;
+	  }
+	  /*
+	  int ret_restore = RestoreInum(true, ino);
+
+	  if (ret_restore != 0) {
+		  return yfs_client::NOENT;
+	  }
+	  */
+	  dir_info.dir_block_.erase(del_mit);
+	  dir_info.DirFormToString(data);
+	  ret = putdata(parent, data);
+	  if (ret != yfs_client::OK) {
+		  return ret;
+	  }
+	  YfsLock yl2(lc, ino);
+	  if (ec-&amp;gt;remove(ino) != extent_protocol::OK) {
+		return yfs_client::NOENT;
+	  }
+
+	return yfs_client::OK;
+}
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h3 id=&quot;id-part-2locking&quot;&gt;Part 2：Locking&lt;/h3&gt;
+
+&lt;p&gt;下一步就要考虑当有多个yfs_client客户端运行的时候，保证文件操作的原子性了。现在如果yfs_client 的create方法会调用extent服务器中父目录的一些内容，做一些改变，并存储一些新的东西给extent服务器。在两个客户端同时运行的时候，会出点两个客户端同时获取一个extent服务器的旧数据的信息，每一个会分别插入一个新的内容在这个目录文件中，然后写入extent服务器中。那么最终这个extent中的数据是最后一个人新加的东西。当然正确的结果是这两个客户添加的东西都要加上，这是一个潜在的竞争。在并发CREATE UNLIN，并发 MKDIR UNLINK，并发WRITE中都会存在。&lt;/p&gt;
+
+&lt;p&gt;所以，可以要使用锁服务来消除竞争。比如yfs_client应当在CREATE的时候请求一个锁，当修改完毕后，在把这个锁释放掉。如果存在并发操作，这个锁会将并发的两个操作分开，保证原子性。左右yfs_client必须在相同的一个锁服务器上请求。逻辑如图[3]所示：&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/distribution_pic/system_logic.png&quot; alt=&quot;image&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;em&gt;图[3]&lt;/em&gt;&lt;/p&gt;
+
+&lt;h4 id=&quot;id-your-job-2&quot;&gt;Your Job&lt;/h4&gt;
+&lt;p&gt;主要任务就时在yfs_client操作的时候加上锁来确保并发的正确性。test-lab-3-b和test-lab-3-c用作测试。如果你在添加锁之前见进行了测试，那么会在并发创建（concurrent create）。如果在添加了锁之后还有这个错误，那就是有bug了。&lt;/p&gt;
+
+&lt;h4 id=&quot;id-detailed-guidance&quot;&gt;Detailed Guidance&lt;/h4&gt;
+&lt;ul&gt;
+  &lt;li&gt;
+    &lt;p&gt;关于锁&lt;/p&gt;
+
+    &lt;p&gt;最极端的例子就是，整个文件系统中只是用一个锁，这样所有的操作都不会是并行的。还有一个比较极端的例子就是在一个目录下使用一个锁，当然这也不是一个好的方法。单一个全局变量的锁就保证了所有的并发，但是一个细粒度的锁就会增加开销，而且容易发生死锁，因为可能在某些操作时，会需要持有多个锁。&lt;/p&gt;
+
+    &lt;p&gt;应当给每一个锁一个inum。这样在对文件或者目录做操作的时候就会比较容易，不用再做什么转换。对那个inum操作，申请哪个inum的锁，使用完后直接释放就好。当然在发生了error，也要及时的释放锁。&lt;/p&gt;
+
+    &lt;p&gt;在yfs_client中使用lab1中实现的lock服务就好，就像使用extent_client一样方便。&lt;/p&gt;
+  &lt;/li&gt;
+  &lt;li&gt;
+    &lt;p&gt;注意以下事件&lt;/p&gt;
+
+    &lt;p&gt;这是首次挂载两个YFS，如果在以前的实验中没有注意的话你可能在分配inum时会出现一些问题，即分配了两个相同的inum。有一种避免的方法就是使用随机数生成inum，可以通过pid生成。（我的代码使用的是时间毫秒级，秒级的不行）。&lt;/p&gt;
+
+    &lt;p&gt;这次实验也是首次使用“\0”写入文件，如果使用std::string(char*)构造函数创建会失败，因为这个构造函数还把“\0”作为string’的结尾。如果使用这种构造函数进行写读写数据的初始化，会造成问题。&lt;strong&gt;使用std::string(bug, size)这一个函数代替。&lt;/strong&gt;&lt;/p&gt;
+  &lt;/li&gt;
+&lt;/ul&gt;
+</content>
+  </entry>
+  
+  <entry>
+    <title>6.824:Lab 1 Lock Server</title>
+    <link href="//2018/05/22/6.824-Lab-1-Lock-Server.html"/>
+    <updated>2018-05-22T00:00:00+08:00</updated>
+    <id>//2018/05/22/6.824:Lab-1-Lock-Server</id>
+    <content type="html">&lt;h1 id=&quot;id-prologue&quot;&gt;Prologue&lt;/h1&gt;
+&lt;p&gt;本文是基于MIT 6.824 Distributed Systems 2012年实验，实现一个多服务器的文件系统 YFS(Yet Another File System)。以下是实验指导+报告，实验代码以上传至github，可做交流。&lt;/p&gt;
+
+&lt;h1 id=&quot;id-lab-1lock-server&quot;&gt;Lab 1:Lock Server&lt;/h1&gt;
+&lt;h2 id=&quot;id-introduction&quot;&gt;Introduction&lt;/h2&gt;
+&lt;p&gt;在这一系列的实验中，你将要实现一个功能齐全的分布式文件系统。为了能够正常的工作，yfs服务器需要一个锁服务来完成文件系统操作。在这个实验中，将要完成一个简单的锁服务。&lt;/p&gt;
+
+&lt;p&gt;锁服务的核心逻辑由两个模块组成，锁服务客户端和服务端。他们之间通过RPC（Remote procedure call 远程调用）进行通信。客户端通过发送acquire请求给锁服务器获取一个锁。锁服务保证每个锁每次只发送给同一个客户端。当客户端完成临界资源区操作后，发送release请求给服务器，释放该锁。此时服务器再将此锁给其他的客户端。&lt;/p&gt;
+
+&lt;p&gt;另外为了实现锁服务，需要RPC保证每一次请求至多传一次（at-more-once）来消除RPC的重复传输。重复传输之所以会存在是因为RPC系统必须重传丢失的RPC报文，如果原先的请求没有丢弃，这种重传会导致RPC重复传递。&lt;/p&gt;
+
+&lt;p&gt;如果重复的RPC被传递，并且处理不当的话，经常会使应用出现问题。比如当A客户发送acquire给服务器索要锁x，服务器给了A，当A通过release释放这个锁的时候，原先acquire请求才到达服务器，服务器又把这个锁给了A，但是A永远不会释放这个锁了（因为他没有acquire这个锁）。这种行为明显是有问题的。&lt;/p&gt;
+
+&lt;h2 id=&quot;id-your-job&quot;&gt;Your Job&lt;/h2&gt;
+&lt;p&gt;首要任务就是在一个网络状态良好的情况下实现一个功能正确的锁服务器。功能正确即：在任何一个时间点，一个锁至多有一个用户持有。&lt;/p&gt;
+
+&lt;p&gt;实验将使用lock_tester进行测试以检验锁服务的正确性。比如检验服务器是否在任意时间一个锁至多分配给一个用户。&lt;/p&gt;
+
+&lt;p&gt;第二个任务是去报RPC服务每次请求至多请求一次（at-most-once，以后为了简便使用at-most-once）你可以设置环境变量RPC_LOSSY请求来模拟网络数据丢失的情况。需要修改的文件为rpc.{cc,h}, lock_client.{cc,h}, lock_server.{cc,h}, lock_smain.{cc,h}。&lt;/p&gt;
+
+&lt;p&gt;在这一实验中，你不用考虑服务器或者客户端的失败或者失效，但是需要注意一些有问题的应用。&lt;/p&gt;
+
+&lt;h2 id=&quot;id-detailed-guidance&quot;&gt;Detailed Guidance&lt;/h2&gt;
+
+&lt;p&gt;原则上你可以使用任何的方法来保证在“your job”提到的任务，并通过测试工具的测试。但你可以参考Detailed Guidance中的提示更方便的完成。&lt;/p&gt;
+
+&lt;h3 id=&quot;id-step-one-在网络状态良好的情况下实现锁服务器&quot;&gt;Step One 在网络状态良好的情况下实现锁服务器&lt;/h3&gt;
+
+&lt;p&gt;首先需要在网络状态良好的情况下实现锁服务器，不用考虑重复传输的RPC。&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;
+    &lt;p&gt;使用RPC系统 &lt;br /&gt;
+  RPC的源代码在rpc的子目录下，一个服务通过申请端口监听方式实现一个RPC对象的方式（rpcs）使用RPC。客户端通过创建客户端对象（rpcc）链接服务端的IP和端口发起RPC。&lt;/p&gt;
+
+    &lt;p&gt;每一个RPC通过有一个唯一的辨识ID。通过在lock_protocol.h中对acquire和release的定义了一个RPC辨识ID，如果需要注册其他的RPC，同样也需要注册（见lock_main.cc）。&lt;/p&gt;
+
+    &lt;p&gt;你可以通过实现lock_client和lock_server的方式学习RPC系统。RPC的请求参数从1-6个不等，返回一个整数作为状态码。返回0就是成功，返回其他的非0正整数就是存在着各种问题，比如超时等等。&lt;/p&gt;
+
+    &lt;p&gt;RPC系统将传入参数序列化为一个stream通过网络传输到另一端，另一端通过反序列化的方式将传入参数还原出来。需要注意的时，RPC反序列化时是不会检查传输信息的类型的。比如你传入一个uint32_t的类型，但是另一端需要把它反序列解成uint64_t，这是可以的。不过会出现各种难以预计的错误。所以调用端和接收端对于参数要统一。&lt;/p&gt;
+
+    &lt;p&gt;RPC库提供了一些常用的C++对象的序列化方法，如：std::string, int 和 char（见rpc.cc）。如果你的RPC调用了不同类型的对象作为传参，那么你就需要自己实现它的序列和反序列的方法。&lt;/p&gt;
+  &lt;/li&gt;
+  &lt;li&gt;
+    &lt;p&gt;实现锁服务  &lt;br /&gt;
+  锁服务可以处理不同的锁。每一个锁有一个唯一的标识符lock_protocol::lockid_t。如果一个客户请求这个锁没有在锁服务的集合中，那就创建这个锁，并给这个客户。如果有这个锁，那么检查此锁的状态，如果这个锁被别的客户所使用，那么就让此客户等待，直到占有这个锁的客户将此锁归还。&lt;/p&gt;
+
+    &lt;p&gt;需要修改lock_server.{cc,h}这个文件接收来自客户端的acquire和release请求。并记录每一个锁的状态。&lt;/p&gt;
+
+    &lt;p&gt;一个锁有两种不同的状态&lt;/p&gt;
+    &lt;ul&gt;
+      &lt;li&gt;free：这个锁没有任何一个客户持有&lt;/li&gt;
+      &lt;li&gt;locked：某个客户端正在持有此锁&lt;/li&gt;
+    &lt;/ul&gt;
+
+    &lt;p&gt;服务器端的锁管理可以使用C++ STL中的 std::map来实现每一个锁状态的保管&lt;/p&gt;
+  &lt;/li&gt;
+  &lt;li&gt;
+    &lt;p&gt;实现锁客户端&lt;br /&gt;
+  客户类lock_client时lock_server的客户端侧的接口。这个接口提供两个方法acquire和release接收和发送RPC接口。可以参考lock_dome.cc这个文件来参考接口的使用方法。&lt;strong&gt;注意lock_client::acquire必须要等到请求到锁后才能返回&lt;/strong&gt;。&lt;/p&gt;
+  &lt;/li&gt;
+  &lt;li&gt;
+    &lt;p&gt;处理多线程并发  &lt;br /&gt;
+  lock_client和lock_ser都使用了多线程并发的策略。在服务端，RPC提供了一个线程池，每次使用一个空闲的线程。在客户端一侧，不同的线程也可以并发地调用acquire和release。&lt;/p&gt;
+
+    &lt;p&gt;应当使用线程互斥来保证共享数据的安全性。你应该使用线程条件变量以保证锁服务请求中等待逻辑。（可以参考pthread_cond_t的使用方法）&lt;/p&gt;
+
+    &lt;p&gt;线程在一个循环中等待，判断是否可换新。这样可以保护线程在pthread_cond_wait和pthread_cond_timewait()函数唤醒。&lt;/p&gt;
+
+    &lt;p&gt;一个简单的互斥使用策略是，对于lock_server使用一个单一的mutex来保护临界区（那个锁状态的map），使用较粗粒度的互斥锁就可以了。&lt;/p&gt;
+
+    &lt;p&gt;逻辑如图[1]所示:&lt;/p&gt;
+
+    &lt;p&gt;&lt;img src=&quot;/images/distribution_pic/lock_server.png&quot; alt=&quot;image&quot; /&gt;&lt;/p&gt;
+
+    &lt;p&gt;&lt;em&gt;图[1]: clientA向服务器端请求，获取锁。clientB在向服务器请求后，由于A占用着锁，所以需要等待，直到A向服务器释放此锁&lt;/em&gt;&lt;/p&gt;
+  &lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;pre&gt;&lt;code&gt;lock_protocol::status
+lock_server::acquire_lock(int clt, lock_protocol::lockid_t lid, int &amp;amp;r)
+{
+	lock_protocol::status ret = lock_protocol::OK;
+	pthread_mutex_lock(&amp;amp;pcontrol_.pmutex);
+	if (lock_map_.count(lid) &amp;lt;= 0) {
+		lock_map_[lid].is_locked = true;
+	} else {
+		while (lock_map_[lid].is_locked == true) {
+			pthread_cond_wait(&amp;amp;lock_map_[lid].pcond, &amp;amp;pcontrol_.pmutex);
+		}
+		lock_map_[lid].is_locked = true;
+	}
+	ret = lock_protocol::OK;
+	pthread_mutex_unlock(&amp;amp;pcontrol_.pmutex);
+	return ret;
+}
+
+lock_protocol::status
+lock_server::release_lock(int clt, lock_protocol::lockid_t lid, int &amp;amp;r) {
+	lock_protocol::status ret = lock_protocol::OK;
+	pthread_mutex_lock(&amp;amp;pcontrol_.pmutex);
+	if (lock_map_.count(lid) &amp;lt;= 0){
+		pthread_mutex_unlock(&amp;amp;pcontrol_.pmutex);
+		ret = lock_protocol::IOERR;
+	}
+	if (lock_map_[lid].is_locked) {
+		lock_map_[lid].is_locked = false;
+		pthread_cond_signal(&amp;amp;lock_map_[lid].pcond);
+	} else {
+		std::cout &amp;lt;&amp;lt; &quot;lid:&quot; &amp;lt;&amp;lt; lid &amp;lt;&amp;lt; &quot;is not locked, why release?&quot; &amp;lt;&amp;lt; std::endl;
+	}
+	pthread_mutex_unlock(&amp;amp;pcontrol_.pmutex);
+	return ret;
+}
+&lt;/code&gt;&lt;/pre&gt;
+&lt;pre&gt;&lt;code&gt;struct CondLock {
+	CondLock() {
+		is_locked = false;
+		pthread_cond_init(&amp;amp;pcond, NULL);
+	}
+	virtual ~CondLock() {
+		pthread_cond_destroy(&amp;amp;pcond);
+	}
+	bool is_locked;
+	pthread_cond_t pcond;
+};
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h3 id=&quot;id-setp-tworpc实现at-more-once传输&quot;&gt;Setp Two:RPC实现at-more-once传输&lt;/h3&gt;
+&lt;p&gt;RPC代码已经完成了客户端的at-most-once：客户端在等待回复超时时，重新发送请求，完成了每次请求时at-most-once服务端所需的信息。但是服务端的at-most-once代码是有部分缺失的。实现的逻辑在rpcs:chechduplicate_and_update和rpcs::add_reply。任务就是完成这两个函数。&lt;/p&gt;
+
+&lt;p&gt;在你的锁服务已经沟通过了lock_tester之前，开启模拟网络丢失的全局变量“export RPC_LOSSY=5”，这时再使用lock_tester会发现很大概率无法成功完成。&lt;/p&gt;
+
+&lt;p&gt;在处理这个实验室，先大体上了解RPC的框架结构。rpc.cc已经包含了一些处理重复请求的代码，你的任务就是补全这些代码。&lt;/p&gt;
+
+&lt;p&gt;rpcc类时时RPC的客户端类，核心代码在call1这个函数中，他序列化RPC请求并传输给RPC服务器，call1在序列化请求时会填充一些RPC的信息：&lt;/p&gt;
+&lt;pre&gt;&lt;code&gt;// add RPC fields before the RPC request data
+   req_header h(ca.xid, proc, clt_nonce_, srv_nonce_, xid_rep_window_.front());
+   req.pack_req_header(h);
+&lt;/code&gt;&lt;/pre&gt;
+&lt;p&gt;每一个 req_headre的目的是什么，在call1完成RPC请求的准备后，会在一个while（1）的循环中，等待超时后重传。&lt;/p&gt;
+
+&lt;p&gt;rpcs类管理服务端RPC请求，当收到一个RPC的请求后，调用got_pdu将这个请求分配给线程池中的一个线程。线程池包含了几个固定的线程数。头部的header结构包含了足够的信息来消除所有的重复请求。&lt;/p&gt;
+
+&lt;p&gt;怎样确保at-most-once传输？一个方法就是让服务端记住每一个接收的RPC，每一个RPC有一个唯一的标识符xid（每一个客户保持唯一），和clt_nonce（所有客户保持唯一）。服务端同样要记住每一个RPC返回的值。这种方法保证了at-most-once，但是这么做内存会随着RPC的id和回复不断增长。有一种很好的替换方式就是RPC使用滑动窗口的策略记录xid，要求客户端严格按照指定的顺序来生成xid，比如0，1，2，3.。。这样RPC如果安全传到，就忘掉这个xid，因为xid是按顺序递增，不会有相同的重复，低的就可以忽略。
+首先&lt;/p&gt;
+&lt;ol&gt;
+  &lt;li&gt;检查每一个请求如果是重复的，就返回记录他的请求&lt;/li&gt;
+  &lt;li&gt;如果不是重复的请求就将这个请求记住&lt;/li&gt;
+  &lt;li&gt;缩小已经被记住的请求并回复。
+第二，如果一个RPC调用服务器端已经完成，可以使用reply_window_来记录已经RPC的返回值。
+完成这两步就可使用RPC_LOSSY进行测试。&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;pre&gt;&lt;code&gt;rpcs::rpcstate_t 
+rpcs::checkduplicate_and_update(unsigned int clt_nonce, unsigned int xid,
+		unsigned int xid_rep, char **b, int *sz)
+{
+	ScopedLock rwl(&amp;amp;reply_window_m_);
+
+        // You fill this in for Lab 1.
+
+	std::list&amp;lt;reply_t&amp;gt; :: iterator lit = reply_window_[clt_nonce].begin();
+	while(lit != reply_window_[clt_nonce].end()) {
+		if (lit-&amp;gt;xid == xid) {
+			if (lit-&amp;gt;cb_present == false) {
+				return INPROGRESS;
+			} else {
+				*b = lit-&amp;gt;buf;
+				*sz = lit-&amp;gt;sz;
+				return DONE;
+			}
+		}
+		if (lit-&amp;gt;xid &amp;lt;= xid_rep &amp;amp;&amp;amp; lit-&amp;gt;cb_present) {
+			free(lit-&amp;gt;buf);
+			lit = reply_window_[clt_nonce].erase(lit);
+			continue;
+		}
+
+		lit++;
+	}
+
+	if (reply_window_[clt_nonce].size() &amp;gt; 0){
+		if (reply_window_[clt_nonce].back().xid &amp;gt; xid)
+			return FORGOTTEN;
+	}
+
+	reply_t now_reply(xid);
+	lit = reply_window_[clt_nonce].begin();
+	while(lit != reply_window_[clt_nonce].end()){
+		if (lit-&amp;gt;xid &amp;lt; xid)
+			break;
+		lit++;
+	}
+	if (lit != reply_window_[clt_nonce].begin())
+		lit--;
+	reply_window_[clt_nonce].insert(lit, now_reply);
+	return NEW;
+}
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;pre&gt;&lt;code&gt;void
+rpcs::add_reply(unsigned int clt_nonce, unsigned int xid,
+		char *b, int sz)
+{
+	ScopedLock rwl(&amp;amp;reply_window_m_);
+        // You fill this in for Lab 1.
+	std::list&amp;lt;reply_t&amp;gt; :: iterator lit = reply_window_[clt_nonce].begin();
+	for (; lit != reply_window_[clt_nonce].end(); lit++) {
+		if (lit-&amp;gt;xid == xid) {
+			lit-&amp;gt;buf = b;
+			lit-&amp;gt;sz = sz;
+			lit-&amp;gt;cb_present = true;
+			break;
+		}
+	}
+}
+&lt;/code&gt;&lt;/pre&gt;
+</content>
+  </entry>
+  
+
+</feed>
