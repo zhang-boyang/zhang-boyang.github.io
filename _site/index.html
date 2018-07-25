@@ -13,8 +13,8 @@
         <script src="/assets/js/jquery.min.js"></script>
         <script src="/assets/js/jquery.share.min.js"></script>
         <script src="/assets/js/highlight.pack.js"></script>
+        <script type="text/javascript" src="http://cdn.mathjax.org/mathjax/latest/MathJax.js?config=default"></script>
         <script> hljs.initHighlightingOnLoad(); </script>
-        <script src='https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.0/MathJax.js?config=TeX-MML-AM_CHTML'></script>
         
         <title>Note of John Brown</title>
         
@@ -35,6 +35,21 @@
             <div class="row">
                 <div class="col-xs-12 col-sm-12 col-md-6 col-md-offset-3 col-main">
                     
+  <h1><a href="/2018/07/25/%E5%88%86%E5%B8%83%E5%BC%8F%E7%B3%BB%E7%BB%9F%E5%93%88%E5%B8%8C%E5%88%86%E5%8C%BA%E5%A4%84%E7%90%86%E9%97%AE%E9%A2%98.html">分布式系统哈希分区处理问题</a></h1>
+
+  <div class="content">
+
+    
+      <h1 id="id-分布式系统哈希分区处理问题">分布式系统哈希分区处理问题</h1> <p>分布式系统的存在，其重要的一个原因就是为了能够将负载很好的均摊到各个节点上，以数量优势提高性能，即分布式系统的可扩展性。大数据可以分布在多个主机的磁盘上，查询也可以有多个主机分别进行处理。分区的实现方式有很多种，目标基本一致，更好的将负载和查询均匀的分布在各个节点。如果分区不均匀(skew)，那么会使此分区甚至整个系统的效率下降。这篇文章主要讨论在高负载下如何避免热点(hot spot)数据。</p> <p>本文主要针对我工作中所接触的RTRec流式系统中所使用的分布式系统hash分区做讨论，并从架构的美学(aesthetics)提出一个相对简约分区处理系统。现有流式集群使用一致性哈希，主要有两个原因：</p> <ul> <li>保证其负载均衡。这里指的是数据层面的负载均衡，因为接入层已经进行了负载均衡。</li> <li>保证处理与查询的key落在同一台机器(节点)上。流式系统一个重要的工作就是收集客户端产生的上报数据做处理。如果要对某一个用户的行为进行上报，最高效的方法就是将这个用户的行为进行收集缓存，统计，入库。这些要求就要保证处理同一个用户的机器是相同的。同理，对APP信息的曝光，下载记录也需要同一key落在同一台机器上。</li> </ul> <p>系统由三部分组成，zookeeper，WatchDog，节点集群。拓扑图如图[1]所示。节点之间的通讯通过一个全局的路由表作为路由，节点集群中的每个节点与zk相连。zk有两个作用，第一个作用是保持路由表的一致性，第二个作用监控集群中的每一个节点的状态。WatchDog的作用是针对现有节点集群做一致性哈希策略，即生成全局的路由表，将路由表放在zk上进行保管，一旦路由表有变化，通知集群中的各个节点去zk上更新最新的路由表。</p>...
+      <br/>
+      <a href="/2018/07/25/%E5%88%86%E5%B8%83%E5%BC%8F%E7%B3%BB%E7%BB%9F%E5%93%88%E5%B8%8C%E5%88%86%E5%8C%BA%E5%A4%84%E7%90%86%E9%97%AE%E9%A2%98.html">read more</a>
+   
+
+    <p>
+      <span class="gray">25 Jul 2018 by John Brown</span>
+    </p>
+  </div>
+
   <h1><a href="/2018/05/22/6.824-Lab6-7-Replicated-State-Machine.html">6.824:Lab6-7 Replicated State Machine</a></h1>
 
   <div class="content">
