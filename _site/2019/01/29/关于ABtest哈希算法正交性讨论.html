@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0">
+        <link rel="alternate" type="application/rss+xml" href="/atom.xml" />
+        <link rel="shortcut icon" type="image/png" href="/images/icon.jpg" />
+        <link href="https://fonts.googleapis.com/css?family=PT+Sans:400,400italic,700|Abril+Fatface" rel="stylesheet">
+        <link href="https://fonts.googleapis.com/css?family=PT+Serif" rel="stylesheet">
+        <link rel="stylesheet" href="/assets/css/bootstrap.min.css">
+        <link rel="stylesheet" href="/assets/css/share.min.css">
+        <link rel="stylesheet" href="/assets/css/highlight/github-gist.css">
+        <script src="/assets/js/jquery.min.js"></script>
+        <script src="/assets/js/jquery.share.min.js"></script>
+        <script src="/assets/js/highlight.pack.js"></script>
+        <script type="text/javascript" src="https://cdn.mathjax.org/mathjax/latest/MathJax.js?config=default"></script>
+        <script> hljs.initHighlightingOnLoad(); </script>
+        
+        <title>关于ABtest哈希算法正交性讨论 | Note of John Brown</title>
+        
+    </head>
+    <body>
+        <div class="container-fluid">
+            <div class="row row-header">
+                <div class="col-md-6 col-md-offset-3">
+                    <ul class="list-inline list-nav">
+                        <li><a href="/"><b>Note of John Brown</b></a></li>
+                        <li><a href="/archive">archive</a></li>
+                        <li><a href="/about">about</a></li>
+                        <li><a href="/atom.xml">atom</a></li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="row">
+                <div class="col-xs-12 col-sm-12 col-md-6 col-md-offset-3 col-main">
+                    <div class="content">
+    <h1>关于ABtest哈希算法正交性讨论</h1>
+
+    <h1 id="id-关于abtest哈希算法正交性讨论">关于ABtest哈希算法正交性讨论</h1>
+
+<h2 id="id-hash正交性">Hash正交性</h2>
+<p>正交性定义：首先任意一个hash_type都可以均匀的将流量均匀分成100份。使用hash_type1 进行哈希后得到<script type="math/tex">x_i,i\in[0,100)</script>,即每份百分之1的流量，再使用hash_type2进行哈希后得到<script type="math/tex">y_i,i\in[0,100)</script>。如果某个key在被hash_type1进行hash后得到的流量与被hash_type2得到的流量是无关的，那么就说明hash_type1与hash_type2是两中hash方式是正交的。</p>
+
+<p>例如一个1000000用户的流量，经过hash_type1与hash_type2进行hash，理想情况下
+中具有相同每份y中的相同x流量的个数也是同样多的，即100个。如果使用数组命中计数的话，list[<script type="math/tex">x*100 + y</script>], list[<script type="math/tex">n</script>] = 100。越不均匀，也就代表这越相关。</p>
+
+<h2 id="id-bkdrhash算法">BKDRhash算法</h2>
+<p>BKDRhash算法主要是针对字符串进行加密的方法。具体计算方法如下所示：</p>
+
+<script type="math/tex; mode=display">% <![CDATA[
+\begin{aligned}
+n =& Len(string)\\
+hash\_num=&\sum_{i=0}^nseed^{n - i}*string[i]
+\end{aligned} %]]></script>
+
+<h2 id="id-abtest采用方法">ABtest采用方法</h2>
+<p>目前ABtest 的imei_level和guid_level使用的hash方式是如下伪代码如下所示：</p>
+
+<pre><code class="language-c++">hash(string key, string type){
+   string union_key = key + type;
+   return BKDRhash(union_key, seed = 13131) % 10000;
+}
+</code></pre>
+
+<h2 id="id-关于level1与level2这两个hash算法">关于level1与level2这两个hash算法</h2>
+<p>当使用imei_level1 与 imei_level2 或者 guid_level1与guid_level2时，发现相关性很强：
+<img src="/images/ABtest/1.png" alt="个数数值" />(list 很不均匀) list[x*100 + 0-100] 只有4个有数，其余都是0。</p>
+
+<p>分析：首先imei_level1 与 imei_level2在进行BKDRhash时 union_key的长度都相同即 key+multi_level_one, key+multi_level_two，而且使用的时同一个种子seed = 13131。guid_level同理。那么这样得到的BKDR：</p>
+
+<script type="math/tex; mode=display">sum_1 = seed^n*s[0] + seed^{n-1}*s[1] + \cdots+ seed^2*ord(o)+seed^1*ord(n)+ord(e)\\
+sum_2 = seed^n*s[0] + seed^{n-1}*s[1] + \cdots+ seed^2*ord(t)+seed^1*ord(w)+ord(o)</script>
+
+<p>可以看出sum2 - sum1 是一个定值，我们记为$D$,</p>
+
+<script type="math/tex; mode=display">% <![CDATA[
+设\\
+\begin{aligned}
+sum_1 =& A\ \  a,b\in[0,99]\ \\
+sum_1\pmod {10000} =& A\pmod {10000} = a *100+b\ \\
+imei\_level1(key+multi\_level\_one) =& a\\[2ex]
+sum_2 =&  A+D \ \ \ q,p\in[0,99]\\
+sum_2\pmod {10000} =& (A + D)\pmod {10000} \\
+=&(A\pmod {10000} + D\pmod {10000})\pmod {10000}\\ 
+=&(a * 100 + b + p*100 + q)\pmod {10000}\\
+\end{aligned}\\
+\begin{aligned}
+\begin{cases}
+imei\_level2(key+multi\_level\_two) = (a + p + 1)\ mod \ 100&,\ if\ b + q \ge 100\\
+imei\_level2(key+multi\_level\_two) = (a + p)\ mod \ 100&,\ if\ b + q \lt 100 
+\end{cases}
+\end{aligned} %]]></script>
+
+<p>因为无论<script type="math/tex">A</script>的值等于多少，<script type="math/tex">D</script>的值时固定的。那么<script type="math/tex">p,q</script>的值是固定的。所以会导致如果imei_level1命中了<script type="math/tex">x</script>号流量，那么imei_level2要么命中<script type="math/tex">(x + p )\ mod \ 100</script>号，要么命中<script type="math/tex">(x + p + 1)\ mod \ 100</script>号，结论肯定是imei_level1与imei_level2两种hash方式<strong>非常相关</strong>。</p>
+
+<p>但是从结论上看，list[x*100 + 0-100] 命中了4份，而不是刚才推出来的2份。那是因为<script type="math/tex">D</script>有两个。ABtest access 最后取值的时候mod了10000的原因。这样子在计算时，会有两个<script type="math/tex">D</script>。当进位影响时有一个<script type="math/tex">D</script>，没有影响时是另一个<script type="math/tex">D</script>。这样产生了两个<script type="math/tex">D</script>，就命中了4份流量。我跑了433260份数据的imei_level1 和imei_level2数据。进位影响的有174900，约占40%，没有影响60%
+<img src="/images/ABtest/2.png" alt="柱状图" />
+相邻两份命中编号相差1，<script type="math/tex">(951+803)/(951+803+135+2498) \approx 40\%</script>都与推算吻合。</p>
+
+<h2 id="id-解决办法">解决办法</h2>
+
+<p>只要使D变的无规律即可，</p>
+<ul>
+  <li>如果union_key长度如果不相同，seed的值不相同就可以很好的解决这个问题</li>
+  <li>两种hash方法产生的union_key的长度不相同也可以</li>
+</ul>
+
+
+
+    
+      <p>
+        <span class="gray">29 Jan 2019 by John Brown </span>
+      </p>
+    
+</div>
+
+<div class="social-sharing"></div>
+
+<script type="text/javascript">
+$(function(){
+    $('.social-sharing').share({
+        sites: ['wechat'],
+    });
+});
+</script>
+
+<div class="comments">
+    <div id="disqus_thread"></div>
+</div>
+
+<script type="text/javascript">
+/* * * CONFIGURATION VARIABLES: EDIT BEFORE PASTING INTO YOUR WEBPAGE * * */
+var disqus_shortname = 'NoteOfJohnBrown'; // required: replace example with your forum shortname
+var disqus_developer = 1;
+
+/* * * DON'T EDIT BELOW THIS LINE * * */
+(function() {
+    var dsq = document.createElement('script'); dsq.type = 'text/javascript'; dsq.async = true;
+    dsq.src = 'https://' + disqus_shortname + '.disqus.com/embed.js';
+    (document.getElementsByTagName('head')[0] || document.getElementsByTagName('body')[0]).appendChild(dsq);
+})();
+</script>
+
+                </div>
+            </div>
+        </div>
+    <link rel="stylesheet" href="/assets/css/blog.css">
+    </body>
+</html>

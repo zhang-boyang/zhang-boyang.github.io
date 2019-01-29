@@ -2,13 +2,90 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
 
   <title>Note of John Brown</title>
-  <updated>2018-08-23T22:47:22+08:00</updated>
+  <updated>2019-01-30T00:55:03+08:00</updated>
   <id></id>
   <author>
     <name>John Brown</name>
     <email></email>
   </author>
 
+  
+  <entry>
+    <title>关于ABtest哈希算法正交性讨论</title>
+    <link href="http://localhost:4000//2019/01/29/%E5%85%B3%E4%BA%8EABtest%E5%93%88%E5%B8%8C%E7%AE%97%E6%B3%95%E6%AD%A3%E4%BA%A4%E6%80%A7%E8%AE%A8%E8%AE%BA.html"/>
+    <updated>2019-01-29T00:00:00+08:00</updated>
+    <id>//2019/01/29/关于ABtest哈希算法正交性讨论</id>
+    <content type="html">&lt;h1 id=&quot;id-关于abtest哈希算法正交性讨论&quot;&gt;关于ABtest哈希算法正交性讨论&lt;/h1&gt;
+
+&lt;h2 id=&quot;id-hash正交性&quot;&gt;Hash正交性&lt;/h2&gt;
+&lt;p&gt;正交性定义：首先任意一个hash_type都可以均匀的将流量均匀分成100份。使用hash_type1 进行哈希后得到&lt;script type=&quot;math/tex&quot;&gt;x_i,i\in[0,100)&lt;/script&gt;,即每份百分之1的流量，再使用hash_type2进行哈希后得到&lt;script type=&quot;math/tex&quot;&gt;y_i,i\in[0,100)&lt;/script&gt;。如果某个key在被hash_type1进行hash后得到的流量与被hash_type2得到的流量是无关的，那么就说明hash_type1与hash_type2是两中hash方式是正交的。&lt;/p&gt;
+
+&lt;p&gt;例如一个1000000用户的流量，经过hash_type1与hash_type2进行hash，理想情况下
+中具有相同每份y中的相同x流量的个数也是同样多的，即100个。如果使用数组命中计数的话，list[&lt;script type=&quot;math/tex&quot;&gt;x*100 + y&lt;/script&gt;], list[&lt;script type=&quot;math/tex&quot;&gt;n&lt;/script&gt;] = 100。越不均匀，也就代表这越相关。&lt;/p&gt;
+
+&lt;h2 id=&quot;id-bkdrhash算法&quot;&gt;BKDRhash算法&lt;/h2&gt;
+&lt;p&gt;BKDRhash算法主要是针对字符串进行加密的方法。具体计算方法如下所示：&lt;/p&gt;
+
+&lt;script type=&quot;math/tex; mode=display&quot;&gt;% &lt;![CDATA[
+\begin{aligned}
+n =&amp; Len(string)\\
+hash\_num=&amp;\sum_{i=0}^nseed^{n - i}*string[i]
+\end{aligned} %]]&gt;&lt;/script&gt;
+
+&lt;h2 id=&quot;id-abtest采用方法&quot;&gt;ABtest采用方法&lt;/h2&gt;
+&lt;p&gt;目前ABtest 的imei_level和guid_level使用的hash方式是如下伪代码如下所示：&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&quot;language-c++&quot;&gt;hash(string key, string type){
+   string union_key = key + type;
+   return BKDRhash(union_key, seed = 13131) % 10000;
+}
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;h2 id=&quot;id-关于level1与level2这两个hash算法&quot;&gt;关于level1与level2这两个hash算法&lt;/h2&gt;
+&lt;p&gt;当使用imei_level1 与 imei_level2 或者 guid_level1与guid_level2时，发现相关性很强：
+&lt;img src=&quot;/images/ABtest/1.png&quot; alt=&quot;个数数值&quot; /&gt;(list 很不均匀) list[x*100 + 0-100] 只有4个有数，其余都是0。&lt;/p&gt;
+
+&lt;p&gt;分析：首先imei_level1 与 imei_level2在进行BKDRhash时 union_key的长度都相同即 key+multi_level_one, key+multi_level_two，而且使用的时同一个种子seed = 13131。guid_level同理。那么这样得到的BKDR：&lt;/p&gt;
+
+&lt;script type=&quot;math/tex; mode=display&quot;&gt;sum_1 = seed^n*s[0] + seed^{n-1}*s[1] + \cdots+ seed^2*ord(o)+seed^1*ord(n)+ord(e)\\
+sum_2 = seed^n*s[0] + seed^{n-1}*s[1] + \cdots+ seed^2*ord(t)+seed^1*ord(w)+ord(o)&lt;/script&gt;
+
+&lt;p&gt;可以看出sum2 - sum1 是一个定值，我们记为$D$,&lt;/p&gt;
+
+&lt;script type=&quot;math/tex; mode=display&quot;&gt;% &lt;![CDATA[
+设\\
+\begin{aligned}
+sum_1 =&amp; A\ \  a,b\in[0,99]\ \\
+sum_1\pmod {10000} =&amp; A\pmod {10000} = a *100+b\ \\
+imei\_level1(key+multi\_level\_one) =&amp; a\\[2ex]
+sum_2 =&amp;  A+D \ \ \ q,p\in[0,99]\\
+sum_2\pmod {10000} =&amp; (A + D)\pmod {10000} \\
+=&amp;(A\pmod {10000} + D\pmod {10000})\pmod {10000}\\ 
+=&amp;(a * 100 + b + p*100 + q)\pmod {10000}\\
+\end{aligned}\\
+\begin{aligned}
+\begin{cases}
+imei\_level2(key+multi\_level\_two) = (a + p + 1)\ mod \ 100&amp;,\ if\ b + q \ge 100\\
+imei\_level2(key+multi\_level\_two) = (a + p)\ mod \ 100&amp;,\ if\ b + q \lt 100 
+\end{cases}
+\end{aligned} %]]&gt;&lt;/script&gt;
+
+&lt;p&gt;因为无论&lt;script type=&quot;math/tex&quot;&gt;A&lt;/script&gt;的值等于多少，&lt;script type=&quot;math/tex&quot;&gt;D&lt;/script&gt;的值时固定的。那么&lt;script type=&quot;math/tex&quot;&gt;p,q&lt;/script&gt;的值是固定的。所以会导致如果imei_level1命中了&lt;script type=&quot;math/tex&quot;&gt;x&lt;/script&gt;号流量，那么imei_level2要么命中&lt;script type=&quot;math/tex&quot;&gt;(x + p )\ mod \ 100&lt;/script&gt;号，要么命中&lt;script type=&quot;math/tex&quot;&gt;(x + p + 1)\ mod \ 100&lt;/script&gt;号，结论肯定是imei_level1与imei_level2两种hash方式&lt;strong&gt;非常相关&lt;/strong&gt;。&lt;/p&gt;
+
+&lt;p&gt;但是从结论上看，list[x*100 + 0-100] 命中了4份，而不是刚才推出来的2份。那是因为&lt;script type=&quot;math/tex&quot;&gt;D&lt;/script&gt;有两个。ABtest access 最后取值的时候mod了10000的原因。这样子在计算时，会有两个&lt;script type=&quot;math/tex&quot;&gt;D&lt;/script&gt;。当进位影响时有一个&lt;script type=&quot;math/tex&quot;&gt;D&lt;/script&gt;，没有影响时是另一个&lt;script type=&quot;math/tex&quot;&gt;D&lt;/script&gt;。这样产生了两个&lt;script type=&quot;math/tex&quot;&gt;D&lt;/script&gt;，就命中了4份流量。我跑了433260份数据的imei_level1 和imei_level2数据。进位影响的有174900，约占40%，没有影响60%
+&lt;img src=&quot;/images/ABtest/2.png&quot; alt=&quot;柱状图&quot; /&gt;
+相邻两份命中编号相差1，&lt;script type=&quot;math/tex&quot;&gt;(951+803)/(951+803+135+2498) \approx 40\%&lt;/script&gt;都与推算吻合。&lt;/p&gt;
+
+&lt;h2 id=&quot;id-解决办法&quot;&gt;解决办法&lt;/h2&gt;
+
+&lt;p&gt;只要使D变的无规律即可，&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;如果union_key长度如果不相同，seed的值不相同就可以很好的解决这个问题&lt;/li&gt;
+  &lt;li&gt;两种hash方法产生的union_key的长度不相同也可以&lt;/li&gt;
+&lt;/ul&gt;
+
+</content>
+  </entry>
   
   <entry>
     <title>ThreadPool, Coroutine, Promise与Future</title>
