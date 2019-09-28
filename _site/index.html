@@ -35,6 +35,21 @@
             <div class="row">
                 <div class="col-xs-12 col-sm-12 col-md-6 col-md-offset-3 col-main">
                     
+  <h1><a href="/2019/09/28/%E5%88%86%E5%B8%83%E5%BC%8F%E7%B3%BB%E7%BB%9F%E5%88%86%E7%89%87%E7%9A%84%E8%89%BA%E6%9C%AF(6.824-Lab4).html">分布式系统分片的艺术(6.824 Lab4)</a></h1>
+
+  <div class="content">
+
+    
+      <h2 id="id-为什么要分片">为什么要”分片”</h2> <p>分片即将整体的数据分而治之。以多节点系统工作的方式共同完成一个工作。能够减轻主节点压力，提高整个集群节点利用率与性能。</p> <p>这里引申出一个问题，为什么需要使用分片这一方式。在分布式系统中，有主副节点(master replica 数据上，Leader Follower raft一致性协议上)。能否在主副节点同时对数据进行操作，哪怕只是对副本进行读操作。至少在要求<strong>强一致</strong>或者<strong>线性一致的</strong>的存储系统中，答案是否定的。在这些系统中，副本只负责提高分布式系统的可用性，对系统的容灾性进行提升。client不能使用replica中的数据。因为副本节点没有向一致性propose的权利，无法保证这次操作已达成了共识。最主要的原因就是如果集群出现了脑裂,导致线性不一致。</p> <p>这里需要提到一点，就是原始的paxos协议，没有raft的leader和follower的区别。paxos角色为proposer和acceptor，但是任何节点都同时扮演这两种角色，一个基础的paxos协议需要多次网络请求（prepare，accept…）。任何节点都可以进行propose的结果就是导致了非常容易发生冲突，在多请求时很很难达成共识。所以一般在工程实现时使用multi-paxos，即也是选出leader打头阵。</p> <h2...
+      <br/>
+      <a href="/2019/09/28/%E5%88%86%E5%B8%83%E5%BC%8F%E7%B3%BB%E7%BB%9F%E5%88%86%E7%89%87%E7%9A%84%E8%89%BA%E6%9C%AF(6.824-Lab4).html">read more</a>
+   
+
+    <p>
+      <span class="gray">28 Sep 2019 by John Brown</span>
+    </p>
+  </div>
+
   <h1><a href="/2019/09/28/Raft%E7%9A%84go%E8%AF%AD%E8%A8%80%E5%AE%9E%E7%8E%B0%E4%B8%8E%E4%BD%BF%E7%94%A8(6.824-Lab2-Lab3).html">Raft的go语言实现与使用(6.824 Lab2-Lab3)</a></h1>
 
   <div class="content">
@@ -103,21 +118,6 @@
       <h1 id="id-paxos">Paxos</h1> <h2 id="id-introduction">Introduction</h2> <p>在实验6-7中，将使用RSM（replicated state machine）的方法复写锁服务，在这个方法中，有一个节点为master，master接收来自client节点的请求并在所有的节点以相同的方式在所有的副本下执行。</p> <p>当master节点失败，任何一个副本都会接管master的工作，因为这些副本都与那个失败的节点有着相同的状态。其中一个比较有挑战性任务时确保集群中的每一个节点所接受的信息是一致的（即哪些是副本，谁是master，哪些副本是keepalive的），即使存在网络分裂（network partition）或者是乱序的情况，数据仍然要保持一致。这里我们使用Paxos协议来实现这一策略。</p> <p>在此次实验中，将要实现Paxos并使用达成集群成员的改变（view...
       <br/>
       <a href="/2018/05/22/6.824-Lab6-7-Replicated-State-Machine.html">read more</a>
-   
-
-    <p>
-      <span class="gray">22 May 2018 by John Brown</span>
-    </p>
-  </div>
-
-  <h1><a href="/2018/05/22/6.824-Lab4-5-Cache.html">6.824:Lab4-5 Cache</a></h1>
-
-  <div class="content">
-
-    
-      <h1 id="id-lab4-5-caching-locks-and-extents">Lab4-5 Caching Locks and Extents</h1> <h2 id="id-introductionlab4">Introduction(Lab4)</h2> <p>在这两个实验中，主要建立了锁和存储服务的缓存，以减少服务器负载并提高客户端的性能。</p> <p>例如在Lab3中的测试，在一个YFS文件夹中建立100个文件，需要像这个文件夹（directory）的锁请求100次。这次的实验就是修改锁服务，让锁客户端只需要发送一次acquire...
-      <br/>
-      <a href="/2018/05/22/6.824-Lab4-5-Cache.html">read more</a>
    
 
     <p>

@@ -2,13 +2,104 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
 
   <title>Note of John Brown</title>
-  <updated>2019-09-28T16:18:50+08:00</updated>
+  <updated>2019-09-28T16:39:22+08:00</updated>
   <id></id>
   <author>
     <name>John Brown</name>
     <email></email>
   </author>
 
+  
+  <entry>
+    <title>分布式系统分片的艺术(6.824 Lab4)</title>
+    <link href="http://localhost:4000//2019/09/28/%E5%88%86%E5%B8%83%E5%BC%8F%E7%B3%BB%E7%BB%9F%E5%88%86%E7%89%87%E7%9A%84%E8%89%BA%E6%9C%AF(6.824-Lab4).html"/>
+    <updated>2019-09-28T00:00:00+08:00</updated>
+    <id>//2019/09/28/分布式系统分片的艺术(6.824 Lab4)</id>
+    <content type="html">&lt;h2 id=&quot;id-为什么要分片&quot;&gt;为什么要”分片”&lt;/h2&gt;
+
+&lt;p&gt;分片即将整体的数据分而治之。以多节点系统工作的方式共同完成一个工作。能够减轻主节点压力，提高整个集群节点利用率与性能。&lt;/p&gt;
+
+&lt;p&gt;这里引申出一个问题，为什么需要使用分片这一方式。在分布式系统中，有主副节点(master replica 数据上，Leader Follower raft一致性协议上)。能否在主副节点同时对数据进行操作，哪怕只是对副本进行读操作。至少在要求&lt;strong&gt;强一致&lt;/strong&gt;或者&lt;strong&gt;线性一致的&lt;/strong&gt;的存储系统中，答案是否定的。在这些系统中，副本只负责提高分布式系统的可用性，对系统的容灾性进行提升。client不能使用replica中的数据。因为副本节点没有向一致性propose的权利，无法保证这次操作已达成了共识。最主要的原因就是如果集群出现了脑裂,导致线性不一致。&lt;/p&gt;
+
+&lt;p&gt;这里需要提到一点，就是原始的paxos协议，没有raft的leader和follower的区别。paxos角色为proposer和acceptor，但是任何节点都同时扮演这两种角色，一个基础的paxos协议需要多次网络请求（prepare，accept…）。任何节点都可以进行propose的结果就是导致了非常容易发生冲突，在多请求时很很难达成共识。所以一般在工程实现时使用multi-paxos，即也是选出leader打头阵。&lt;/p&gt;
+
+&lt;h2 id=&quot;id-怎样进行分片&quot;&gt;怎样进行分片&lt;/h2&gt;
+
+&lt;p&gt;首先分片如下图所示&lt;img src=&quot;/images/raftblog/shard_layer.png&quot; alt=&quot;=&quot; /&gt;：一个分片属于一个组，一个组可以包含多个分片。一个副本组组成一个raft集群，多台服务器($n\ge3$)属于一个副本组，一台服务器同时归属于多个副本组。分片数据被一个副本组保管，以保证可用性。&lt;/p&gt;
+
+&lt;ol&gt;
+  &lt;li&gt;分片的个数&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;p&gt;首先一旦分片个数确定，在系统运行中就成为定值，不可变更。需要将整个数据平均分成几片？具体情况具体分析。主要根据实际的节点数量而定。不易过多，一般在10片左右。&lt;/p&gt;
+
+&lt;ol&gt;
+  &lt;li&gt;怎样分片&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;p&gt;需要建立一个ShardMaster服务告诉客户端与服务端目前数据与集群的情况，我们把它成为配置。配置对应一个序号，每次配置变更时，其所对应的序号自增。最开始的配置编号为0。这个配置不包括任何组，所有分片都在GID0（即无效GID）中。下一个配置为1，以此类推。&lt;/p&gt;
+
+&lt;p&gt;ShardMaster也是一个raft集群，保证其一致性与可用性。&lt;/p&gt;
+
+&lt;p&gt;ShardMaster的工作就是管理配置。每一份配置由一个副本组集合和每个副本组中分配的分片组成。当配置需要被改变时，分片master就会根据现有情况重新创建一个新的配置。当k/v的客户端和服务端需要读取当前（或是以前的配置）时，就会与分片shard进行通讯。这里需要四个接口：&lt;/p&gt;
+
+&lt;p&gt;&lt;code&gt;Join&lt;/code&gt;RPC增加一个新的副本组。他的参数是使用一个唯一的非零的GID对应服务器名称。分片master应当生成一个包含新副本组的新配置。新配置应当尽可能的将分片分的均匀，而且还要尽可能的减少分片在副本组之间的移动。&lt;/p&gt;
+
+&lt;p&gt;&lt;code&gt;Leave&lt;/code&gt;RPC的参数是一个之前加入要离开的组GID的list，分片master应当重新变动配置将这些组从配置中剔除，并且将分片重新分配给剩余的组中。新的配置同样应当尽可能的将分片分的均匀，而且还要尽可能的减少分片在副本组之间的移动。&lt;/p&gt;
+
+&lt;p&gt;&lt;code&gt;Query&lt;/code&gt;RPC的参数是一个配置号。分片master返回这个号码对应的配置。如果这个号码是-1或者比任意一个已知的号码都大，那么分片master应当返回最新的配置。&lt;/p&gt;
+
+&lt;ol&gt;
+  &lt;li&gt;怎样保证分组的均匀&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;p&gt;何为均匀，即拥有分片数量最多的组的分片数 - 拥有数量最少的组的分片数 $&amp;lt;2$。
+   最基本的有两种方法：第一种就是分布式一致性哈希，这种方法有一个有点就是逻辑简单，但是不能保证分片非常的均匀，需要最后进行在平均。同时这个算法不能保证分片在副本间移动的尽可能的少。第二种方法就是均分法。将现有组多处的分片均匀的分给新加入的组中，同样将离去组的分片平均的分摊到剩余组中，就是实现起来比较绕。&lt;/p&gt;
+
+&lt;h2 id=&quot;id-分片kv服务&quot;&gt;分片kv服务&lt;/h2&gt;
+
+&lt;p&gt;每一个分片kv服务作为一个副本组的一部分，每一个副本组为以key为纬度的部分分片提供Get Put和Append操作服务。客户端使用key2shard()函数查找自己的key属于哪一个分片。过个副本组共同组成了一个分片集合。shardmaster实例为副本组分配分片。当分配改变时，副本组根据配置把不再对应的分片交接给其他的分本组，同时保证客户侧数据的完整性。每一个分片需要在raft副本组中的多数副本可以与彼此通信并且与多数shardmaster能够通信即可。也就是说，你的服务即使在少数要在少数的副本组宕机，暂时不可用等情况下依然保持服务。&lt;/p&gt;
+
+&lt;p&gt;这里要思考一个问题：对于一个副本组而言，当配置改变时，不再归属自己的分片怎样处理，自己需要的分片又改怎样获取？&lt;/p&gt;
+
+&lt;p&gt;还有以下场景：
+设，Group1 包含shard1，shard2，我们把它计作 &lt;script type=&quot;math/tex&quot;&gt;G_1:\{S_1,S_2\}&lt;/script&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;script type=&quot;math/tex&quot;&gt;T_1&lt;/script&gt;时刻集群配置为：&lt;script type=&quot;math/tex&quot;&gt;G_1:\{S_1,S_2\}&lt;/script&gt;, &lt;script type=&quot;math/tex&quot;&gt;G_2:\{S_3,S_4\}&lt;/script&gt;, &lt;script type=&quot;math/tex&quot;&gt;G_3:\{S_5\}&lt;/script&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;script type=&quot;math/tex&quot;&gt;T_2=&lt;/script&gt; &lt;script type=&quot;math/tex&quot;&gt;G_1:\{S_1,S_2,S_5\}&lt;/script&gt;, &lt;script type=&quot;math/tex&quot;&gt;G_2:\{S_3,S_4\}&lt;/script&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;script type=&quot;math/tex&quot;&gt;T_3=&lt;/script&gt; &lt;script type=&quot;math/tex&quot;&gt;G_1:\{S_1,S_5\}&lt;/script&gt;, &lt;script type=&quot;math/tex&quot;&gt;G_2:\{S_3\}&lt;/script&gt;, &lt;script type=&quot;math/tex&quot;&gt;G_4\{S_2,S_4\}&lt;/script&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;script type=&quot;math/tex&quot;&gt;G_1&lt;/script&gt; 就会遇到既要向&lt;script type=&quot;math/tex&quot;&gt;G_3&lt;/script&gt;获取&lt;script type=&quot;math/tex&quot;&gt;S_5&lt;/script&gt;和向&lt;script type=&quot;math/tex&quot;&gt;G_4&lt;/script&gt;提供&lt;script type=&quot;math/tex&quot;&gt;S_2&lt;/script&gt;的情况。&lt;/p&gt;
+
+&lt;p&gt;在满足基本服务时还需要考虑两种情况：&lt;/p&gt;
+&lt;ol&gt;
+  &lt;li&gt;
+    &lt;p&gt;垃圾回收&lt;/p&gt;
+
+    &lt;p&gt;当副本对某个分片失去所有权后，副本需要将这个分片的key从数据库中删除掉。将其存储并保存不再请求的键值是非常浪费资源的。&lt;/p&gt;
+  &lt;/li&gt;
+  &lt;li&gt;
+    &lt;p&gt;在配置变更时处理客户端的请求&lt;/p&gt;
+
+    &lt;p&gt;比如$G_3$在某次配置变更时，需要$G_1$的$S_1$和$G_2$的$S_2$，那么我们需要$G_3$在获取到其中的分片后立即开始工作，即使还有某些分片没有到位。比如，$G_1$突然宕机，但是$G_3$在获取到$G_2$提供的$S_2$后就开始工作，不管这个配置的变更最终是否全部完成。&lt;/p&gt;
+  &lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;p&gt;为了处理这些问题，需要在副本组中将保有这些的分片都标记状态：&lt;/p&gt;
+
+&lt;p&gt;&lt;code&gt;RECV&lt;/code&gt;: 表示此分片正在向其他副本组获取中，不能提供服务，不能被GC&lt;/p&gt;
+
+&lt;p&gt;&lt;code&gt;WORK&lt;/code&gt;: 表示此分片属于本副本组，可以对外提供服务，不能被GC&lt;/p&gt;
+
+&lt;p&gt;&lt;code&gt;TRANS&lt;/code&gt;: 表示此分片目前归属与其他分本组，正在向其他副本组传输，不可对外提供服务，不能被GC&lt;/p&gt;
+
+&lt;p&gt;&lt;code&gt;REMV&lt;/code&gt;: 表示已没有在使用，不可对外提供服务，可以被GC&lt;/p&gt;
+
+&lt;p&gt;他们之间只能是以下状态的状态转移方式&lt;code&gt;RECV&lt;/code&gt; -&amp;gt;&lt;code&gt;WORK&lt;/code&gt;-&amp;gt;&lt;code&gt;TRANS&lt;/code&gt;-&amp;gt;&lt;code&gt;REMV&lt;/code&gt;,&lt;code&gt;REMV&lt;/code&gt;-&amp;gt;&lt;code&gt;RECV&lt;/code&gt;&lt;/p&gt;
+</content>
+  </entry>
   
   <entry>
     <title>Raft的go语言实现与使用(6.824 Lab2-Lab3)</title>

@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0">
+        <link rel="alternate" type="application/rss+xml" href="/atom.xml" />
+        <link rel="shortcut icon" type="image/png" href="/images/icon.jpg" />
+        <link href="https://fonts.googleapis.com/css?family=PT+Sans:400,400italic,700|Abril+Fatface" rel="stylesheet">
+        <link href="https://fonts.googleapis.com/css?family=PT+Serif" rel="stylesheet">
+        <link rel="stylesheet" href="/assets/css/bootstrap.min.css">
+        <link rel="stylesheet" href="/assets/css/share.min.css">
+        <link rel="stylesheet" href="/assets/css/highlight/github-gist.css">
+        <script src="/assets/js/jquery.min.js"></script>
+        <script src="/assets/js/jquery.share.min.js"></script>
+        <script src="/assets/js/highlight.pack.js"></script>
+        <script type="text/javascript" src="https://cdn.mathjax.org/mathjax/latest/MathJax.js?config=default"></script>
+        <script> hljs.initHighlightingOnLoad(); </script>
+        
+        <title>分布式系统分片的艺术(6.824 Lab4) | Note of John Brown</title>
+        
+    </head>
+    <body>
+        <div class="container-fluid">
+            <div class="row row-header">
+                <div class="col-md-6 col-md-offset-3">
+                    <ul class="list-inline list-nav">
+                        <li><a href="/"><b>Note of John Brown</b></a></li>
+                        <li><a href="/archive">archive</a></li>
+                        <li><a href="/about">about</a></li>
+                        <li><a href="/atom.xml">atom</a></li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="row">
+                <div class="col-xs-12 col-sm-12 col-md-6 col-md-offset-3 col-main">
+                    <div class="content">
+    <h1>分布式系统分片的艺术(6.824 Lab4)</h1>
+
+    <h2 id="id-为什么要分片">为什么要”分片”</h2>
+
+<p>分片即将整体的数据分而治之。以多节点系统工作的方式共同完成一个工作。能够减轻主节点压力，提高整个集群节点利用率与性能。</p>
+
+<p>这里引申出一个问题，为什么需要使用分片这一方式。在分布式系统中，有主副节点(master replica 数据上，Leader Follower raft一致性协议上)。能否在主副节点同时对数据进行操作，哪怕只是对副本进行读操作。至少在要求<strong>强一致</strong>或者<strong>线性一致的</strong>的存储系统中，答案是否定的。在这些系统中，副本只负责提高分布式系统的可用性，对系统的容灾性进行提升。client不能使用replica中的数据。因为副本节点没有向一致性propose的权利，无法保证这次操作已达成了共识。最主要的原因就是如果集群出现了脑裂,导致线性不一致。</p>
+
+<p>这里需要提到一点，就是原始的paxos协议，没有raft的leader和follower的区别。paxos角色为proposer和acceptor，但是任何节点都同时扮演这两种角色，一个基础的paxos协议需要多次网络请求（prepare，accept…）。任何节点都可以进行propose的结果就是导致了非常容易发生冲突，在多请求时很很难达成共识。所以一般在工程实现时使用multi-paxos，即也是选出leader打头阵。</p>
+
+<h2 id="id-怎样进行分片">怎样进行分片</h2>
+
+<p>首先分片如下图所示<img src="/images/raftblog/shard_layer.png" alt="=" />：一个分片属于一个组，一个组可以包含多个分片。一个副本组组成一个raft集群，多台服务器($n\ge3$)属于一个副本组，一台服务器同时归属于多个副本组。分片数据被一个副本组保管，以保证可用性。</p>
+
+<ol>
+  <li>分片的个数</li>
+</ol>
+
+<p>首先一旦分片个数确定，在系统运行中就成为定值，不可变更。需要将整个数据平均分成几片？具体情况具体分析。主要根据实际的节点数量而定。不易过多，一般在10片左右。</p>
+
+<ol>
+  <li>怎样分片</li>
+</ol>
+
+<p>需要建立一个ShardMaster服务告诉客户端与服务端目前数据与集群的情况，我们把它成为配置。配置对应一个序号，每次配置变更时，其所对应的序号自增。最开始的配置编号为0。这个配置不包括任何组，所有分片都在GID0（即无效GID）中。下一个配置为1，以此类推。</p>
+
+<p>ShardMaster也是一个raft集群，保证其一致性与可用性。</p>
+
+<p>ShardMaster的工作就是管理配置。每一份配置由一个副本组集合和每个副本组中分配的分片组成。当配置需要被改变时，分片master就会根据现有情况重新创建一个新的配置。当k/v的客户端和服务端需要读取当前（或是以前的配置）时，就会与分片shard进行通讯。这里需要四个接口：</p>
+
+<p><code>Join</code>RPC增加一个新的副本组。他的参数是使用一个唯一的非零的GID对应服务器名称。分片master应当生成一个包含新副本组的新配置。新配置应当尽可能的将分片分的均匀，而且还要尽可能的减少分片在副本组之间的移动。</p>
+
+<p><code>Leave</code>RPC的参数是一个之前加入要离开的组GID的list，分片master应当重新变动配置将这些组从配置中剔除，并且将分片重新分配给剩余的组中。新的配置同样应当尽可能的将分片分的均匀，而且还要尽可能的减少分片在副本组之间的移动。</p>
+
+<p><code>Query</code>RPC的参数是一个配置号。分片master返回这个号码对应的配置。如果这个号码是-1或者比任意一个已知的号码都大，那么分片master应当返回最新的配置。</p>
+
+<ol>
+  <li>怎样保证分组的均匀</li>
+</ol>
+
+<p>何为均匀，即拥有分片数量最多的组的分片数 - 拥有数量最少的组的分片数 $&lt;2$。
+   最基本的有两种方法：第一种就是分布式一致性哈希，这种方法有一个有点就是逻辑简单，但是不能保证分片非常的均匀，需要最后进行在平均。同时这个算法不能保证分片在副本间移动的尽可能的少。第二种方法就是均分法。将现有组多处的分片均匀的分给新加入的组中，同样将离去组的分片平均的分摊到剩余组中，就是实现起来比较绕。</p>
+
+<h2 id="id-分片kv服务">分片kv服务</h2>
+
+<p>每一个分片kv服务作为一个副本组的一部分，每一个副本组为以key为纬度的部分分片提供Get Put和Append操作服务。客户端使用key2shard()函数查找自己的key属于哪一个分片。过个副本组共同组成了一个分片集合。shardmaster实例为副本组分配分片。当分配改变时，副本组根据配置把不再对应的分片交接给其他的分本组，同时保证客户侧数据的完整性。每一个分片需要在raft副本组中的多数副本可以与彼此通信并且与多数shardmaster能够通信即可。也就是说，你的服务即使在少数要在少数的副本组宕机，暂时不可用等情况下依然保持服务。</p>
+
+<p>这里要思考一个问题：对于一个副本组而言，当配置改变时，不再归属自己的分片怎样处理，自己需要的分片又改怎样获取？</p>
+
+<p>还有以下场景：
+设，Group1 包含shard1，shard2，我们把它计作 <script type="math/tex">G_1:\{S_1,S_2\}</script></p>
+
+<p><script type="math/tex">T_1</script>时刻集群配置为：<script type="math/tex">G_1:\{S_1,S_2\}</script>, <script type="math/tex">G_2:\{S_3,S_4\}</script>, <script type="math/tex">G_3:\{S_5\}</script></p>
+
+<p><script type="math/tex">T_2=</script> <script type="math/tex">G_1:\{S_1,S_2,S_5\}</script>, <script type="math/tex">G_2:\{S_3,S_4\}</script></p>
+
+<p><script type="math/tex">T_3=</script> <script type="math/tex">G_1:\{S_1,S_5\}</script>, <script type="math/tex">G_2:\{S_3\}</script>, <script type="math/tex">G_4\{S_2,S_4\}</script></p>
+
+<p><script type="math/tex">G_1</script> 就会遇到既要向<script type="math/tex">G_3</script>获取<script type="math/tex">S_5</script>和向<script type="math/tex">G_4</script>提供<script type="math/tex">S_2</script>的情况。</p>
+
+<p>在满足基本服务时还需要考虑两种情况：</p>
+<ol>
+  <li>
+    <p>垃圾回收</p>
+
+    <p>当副本对某个分片失去所有权后，副本需要将这个分片的key从数据库中删除掉。将其存储并保存不再请求的键值是非常浪费资源的。</p>
+  </li>
+  <li>
+    <p>在配置变更时处理客户端的请求</p>
+
+    <p>比如$G_3$在某次配置变更时，需要$G_1$的$S_1$和$G_2$的$S_2$，那么我们需要$G_3$在获取到其中的分片后立即开始工作，即使还有某些分片没有到位。比如，$G_1$突然宕机，但是$G_3$在获取到$G_2$提供的$S_2$后就开始工作，不管这个配置的变更最终是否全部完成。</p>
+  </li>
+</ol>
+
+<p>为了处理这些问题，需要在副本组中将保有这些的分片都标记状态：</p>
+
+<p><code>RECV</code>: 表示此分片正在向其他副本组获取中，不能提供服务，不能被GC</p>
+
+<p><code>WORK</code>: 表示此分片属于本副本组，可以对外提供服务，不能被GC</p>
+
+<p><code>TRANS</code>: 表示此分片目前归属与其他分本组，正在向其他副本组传输，不可对外提供服务，不能被GC</p>
+
+<p><code>REMV</code>: 表示已没有在使用，不可对外提供服务，可以被GC</p>
+
+<p>他们之间只能是以下状态的状态转移方式<code>RECV</code> -&gt;<code>WORK</code>-&gt;<code>TRANS</code>-&gt;<code>REMV</code>,<code>REMV</code>-&gt;<code>RECV</code></p>
+
+
+    
+      <p>
+        <span class="gray">28 Sep 2019 by John Brown </span>
+      </p>
+    
+</div>
+
+<div class="social-sharing"></div>
+
+<script type="text/javascript">
+$(function(){
+    $('.social-sharing').share({
+        sites: ['wechat'],
+    });
+});
+</script>
+
+<div class="comments">
+    <div id="disqus_thread"></div>
+</div>
+
+<script type="text/javascript">
+/* * * CONFIGURATION VARIABLES: EDIT BEFORE PASTING INTO YOUR WEBPAGE * * */
+var disqus_shortname = 'NoteOfJohnBrown'; // required: replace example with your forum shortname
+var disqus_developer = 1;
+
+/* * * DON'T EDIT BELOW THIS LINE * * */
+(function() {
+    var dsq = document.createElement('script'); dsq.type = 'text/javascript'; dsq.async = true;
+    dsq.src = 'https://' + disqus_shortname + '.disqus.com/embed.js';
+    (document.getElementsByTagName('head')[0] || document.getElementsByTagName('body')[0]).appendChild(dsq);
+})();
+</script>
+
+                </div>
+            </div>
+        </div>
+    <link rel="stylesheet" href="/assets/css/blog.css">
+    </body>
+</html>
