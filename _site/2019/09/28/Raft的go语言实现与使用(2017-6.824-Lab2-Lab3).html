@@ -16,7 +16,7 @@
         <script type="text/javascript" src="https://cdn.mathjax.org/mathjax/latest/MathJax.js?config=default"></script>
         <script> hljs.initHighlightingOnLoad(); </script>
         
-        <title>Raft的go语言实现与使用(6.824 Lab2-Lab3) | Note of John Brown</title>
+        <title>Raft的go语言实现与使用(2017-6.824 Lab2-Lab3) | Note of John Brown</title>
         
     </head>
     <body>
@@ -35,7 +35,7 @@
             <div class="row">
                 <div class="col-xs-12 col-sm-12 col-md-6 col-md-offset-3 col-main">
                     <div class="content">
-    <h1>Raft的go语言实现与使用(6.824 Lab2-Lab3)</h1>
+    <h1>Raft的go语言实现与使用(2017-6.824 Lab2-Lab3)</h1>
 
     <p>Raft协议的解读已经有很多，整体最主要的协议其实用论文中的两幅图就能大致表述了。最后再加上一个Snapshot的图解析基本就全。相对与Paxos而言，我个人认为Raft从实现协议的角度来说反而比Paxos要复杂。主要就是在于index的处理上。这此使用Go语言实现了一个Raft协议并支持snapshot。并且使用Raft协议实现了一个分布式的kv存储。</p>
 
