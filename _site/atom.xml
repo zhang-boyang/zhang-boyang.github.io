@@ -2,13 +2,110 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
 
   <title>Note of John Brown</title>
-  <updated>2019-09-28T17:48:07+08:00</updated>
+  <updated>2019-12-19T00:28:17+08:00</updated>
   <id></id>
   <author>
     <name>John Brown</name>
     <email></email>
   </author>
 
+  
+  <entry>
+    <title>LRU算法建模</title>
+    <link href="http://localhost:4000//2019/12/19/LRU%E7%AE%97%E6%B3%95%E5%BB%BA%E6%A8%A1.html"/>
+    <updated>2019-12-19T00:00:00+08:00</updated>
+    <id>//2019/12/19/LRU算法建模</id>
+    <content type="html">&lt;h2 id=&quot;id-什么是lruleast-recently-used&quot;&gt;什么是LRU(Least-Recently Used)&lt;/h2&gt;
+
+&lt;ul&gt;
+  &lt;li&gt;
+    &lt;p&gt;缓存的队列长度(容量)为&lt;script type=&quot;math/tex&quot;&gt;S&lt;/script&gt;, 一共有&lt;script type=&quot;math/tex&quot;&gt;K&lt;/script&gt;的项, K » S &amp;gt; 0。&lt;/p&gt;
+  &lt;/li&gt;
+  &lt;li&gt;
+    &lt;p&gt;每一个缓存项被访问的概率为&lt;script type=&quot;math/tex&quot;&gt;\alpha_k&lt;/script&gt;, &lt;script type=&quot;math/tex&quot;&gt;k\subseteq(1, K)&lt;/script&gt;&lt;/p&gt;
+  &lt;/li&gt;
+  &lt;li&gt;
+    &lt;p&gt;当某个缓存项被命中后，它会被移到缓存的第一位。如果某项没有被命中，会被存入第一位，此时，如果缓存队列容量大于&lt;script type=&quot;math/tex&quot;&gt;S&lt;/script&gt;，最末尾的缓存项会被移除缓存队列。&lt;/p&gt;
+  &lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h2 id=&quot;id-kingflagolet-模型公式&quot;&gt;King，Flagolet 模型公式&lt;/h2&gt;
+
+&lt;p&gt;最早提出计算LRU未命中的概率计算是由W.F.King提出的计算公式：
+&lt;script type=&quot;math/tex&quot;&gt;s&lt;/script&gt; 为cache的容量。每一项为&lt;script type=&quot;math/tex&quot;&gt;p_i,i\in[1..K], \sum_{i=1}^Kp_{i}=1&lt;/script&gt;&lt;/p&gt;
+
+&lt;script type=&quot;math/tex; mode=display&quot;&gt;P_{miss} = \sum_{s-tuple\{i_1,i_2,\dots,i_s\}\\  i_1\neq i_2\neq i_3 \neq \dotsc \neq i_s} p_{i_1}\frac{p_{i_2}}{1 - p_{i_1}}\frac{p_{i_3}}{1-p_{i_1}-p_{i_2}}\dotsc\frac{p_{i_s}}{1-p_{i_1}-p_{i_2}-\dotsc p_{i_{s-1}}}(1-p_{i_1}-p_{i_2}-\dotsc p_{i_s})&lt;/script&gt;
+
+&lt;p&gt;这个公式倒是比较好理解,不过计算起来比较麻烦，&lt;script type=&quot;math/tex&quot;&gt;s-tuple&lt;/script&gt;为&lt;script type=&quot;math/tex&quot;&gt;p_i,i\in[1..K]&lt;/script&gt;的排列&lt;script type=&quot;math/tex&quot;&gt;A_{K}^S&lt;/script&gt;&lt;/p&gt;
+
+&lt;p&gt;Flajolet等人在92年一片论文(Birthday paradox, coupon collectors, caching algorithms and self-organizing search)中论证了&lt;/p&gt;
+
+&lt;script type=&quot;math/tex; mode=display&quot;&gt;1 - P_{miss} = \sum_{q=0}^{s-1}[u^q]\int_0^\infty (\prod_{i=1}^s(1+u(e^{p_{i}t} - 1)))(\sum_{i=1}^m{\frac{p^2_i}{1+u(e^{p_{i}t }-1)}})e^{-t}\mathrm{d}x&lt;/script&gt;
+
+&lt;p&gt;推倒中用到了生成函数和Laplace-Borel transform，这个公式其实我没太看懂。&lt;/p&gt;
+
+&lt;p&gt;在&lt;a href=&quot;https://arxiv.org/abs/1607.01283&quot;&gt;Identity of King and Flajolet &amp;amp; al. Formulae for LRU Miss Rate Exact Computation&lt;/a&gt;论文中，作者Christian Berthet证明了King与Flajolet两个公式为等价的。&lt;/p&gt;
+
+&lt;h2 id=&quot;id-马尔可夫过程模型&quot;&gt;马尔可夫过程模型&lt;/h2&gt;
+
+&lt;p&gt;这个方法借鉴了&lt;a href=&quot;https://ieeexplore.ieee.org/abstract/document/6614153/&quot;&gt;Modeling Hierarchical Caches in Content-Centric Networks&lt;/a&gt;这片论文中模型的设计方法。&lt;/p&gt;
+
+&lt;p&gt;用Markov chain建模计算LRU命中率的方法，相比于King的方法将时间空间由指数降为了平方阶。
+&lt;img src=&quot;/images/lru_pic/markov_chain.png&quot; alt=&quot;markov_lru&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;在此图中，&lt;/p&gt;
+&lt;blockquote&gt;
+  &lt;p&gt;一共有&lt;script type=&quot;math/tex&quot;&gt;M = S + 1&lt;/script&gt;个状态，其中状态&lt;script type=&quot;math/tex&quot;&gt;M&lt;/script&gt;为miss，即未在队列。
+&lt;script type=&quot;math/tex&quot;&gt;P_{i,j}&lt;/script&gt; 为一次访问后状态从状态&lt;script type=&quot;math/tex&quot;&gt;p_i&lt;/script&gt;到&lt;script type=&quot;math/tex&quot;&gt;p_j&lt;/script&gt;。一共有四种转换的情况&lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;ol&gt;
+  &lt;li&gt;&lt;script type=&quot;math/tex&quot;&gt;P_{i,i}, i\subseteq[2, S]&lt;/script&gt;,在一次访问后，其队列的位置没有发生变化&lt;/li&gt;
+  &lt;li&gt;&lt;script type=&quot;math/tex&quot;&gt;P_{M,M}&lt;/script&gt;, 在一次访问中，其还出为未被缓存的状态&lt;/li&gt;
+  &lt;li&gt;&lt;script type=&quot;math/tex&quot;&gt;P_{i-1, i}, i\subseteq[2, M]&lt;/script&gt;, 在一次访问中，其队列位置向后一位&lt;/li&gt;
+  &lt;li&gt;&lt;script type=&quot;math/tex&quot;&gt;P_{i,1}, i\subseteq[1, M]&lt;/script&gt;, 在一次访问中，被命中，被移动到队列的第一位&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;p&gt;设缓存项&lt;script type=&quot;math/tex&quot;&gt;k&lt;/script&gt;,在&lt;script type=&quot;math/tex&quot;&gt;p_i&lt;/script&gt;状态的概率为&lt;script type=&quot;math/tex&quot;&gt;p_k(i)&lt;/script&gt;, &lt;script type=&quot;math/tex&quot;&gt;b_k = \sum_{t=1}^{k}p_k(t)&lt;/script&gt;
+&lt;script type=&quot;math/tex&quot;&gt;P_{i,i} = \sum_{t=1}^{K}\alpha_tb_t(i-1)&lt;/script&gt;&lt;/p&gt;
+
+&lt;script type=&quot;math/tex; mode=display&quot;&gt;P_{M,M} = 1 - \alpha_k&lt;/script&gt;
+
+&lt;script type=&quot;math/tex; mode=display&quot;&gt;P_{i-1,i} = 1 - \sum_{t=1}^{K}\alpha_tb_t(t-2) - \alpha_k&lt;/script&gt;
+
+&lt;script type=&quot;math/tex; mode=display&quot;&gt;P_{i,1} = \alpha_k&lt;/script&gt;
+
+&lt;p&gt;根据这些转移概率，可以写出其平衡方程组：
+&lt;script type=&quot;math/tex&quot;&gt;% &lt;![CDATA[
+\begin{cases}
+    \pi_1 &amp;= \alpha_k\sum_{i=1}^{K}\pi_i&amp;\\
+    \pi_i &amp; = P_{i,i}\pi_i + P_{i-1,i}\pi_{i-1}&amp;   {i \subseteq[2,M]}
+\end{cases} %]]&gt;&lt;/script&gt;&lt;/p&gt;
+
+&lt;p&gt;&lt;script type=&quot;math/tex&quot;&gt;p_k(i) = \pi_i&lt;/script&gt;,那么&lt;script type=&quot;math/tex&quot;&gt;p_k(i)&lt;/script&gt;的递归求解公式为：&lt;/p&gt;
+
+&lt;script type=&quot;math/tex; mode=display&quot;&gt;p_k(i) = p_k(i-1)\frac{1-\sum_{t=1}^{K}\alpha_tb_t(i-2)-\alpha_k}{1- \sum_{t=1}^{K}\alpha_tb_t(i-1)},i\subseteq[2,M]&lt;/script&gt;
+
+&lt;p&gt;其中&lt;script type=&quot;math/tex&quot;&gt;p_k(1)=\alpha_k&lt;/script&gt;&lt;/p&gt;
+
+&lt;p&gt;这样以来，项&lt;script type=&quot;math/tex&quot;&gt;k&lt;/script&gt;的命中率&lt;script type=&quot;math/tex&quot;&gt;h_k=\sum_{i=1}^{S}p_k(i)&lt;/script&gt;,整体LRU在稳定状态下的命中率即为：
+&lt;script type=&quot;math/tex&quot;&gt;H=\sum_{k = 1}^{K}\alpha_kh_k&lt;/script&gt;&lt;/p&gt;
+
+&lt;p&gt;下面是用计算机模拟生成数据和使用马尔可夫模型推倒的公式的对比。数据是生产中遇到的数据。&lt;/p&gt;
+
+&lt;ul&gt;
+  &lt;li&gt;请求服务的key中500个头部key占总请求的50%&lt;/li&gt;
+  &lt;li&gt;请求服务的key中3500个中部key占总请求的35%&lt;/li&gt;
+  &lt;li&gt;请求服务的key中100000个尾部key占总请求的15%&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;下图可以看到，在模拟按概率请求的结果与公式推倒的结果是吻合的。&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/lru_pic/lru_hit_ration_sim.png&quot; alt=&quot;hit_ratio&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;从结果也可以看出，在刚开始增大cache的容积，对命中率有显著地提升。命中率趋势有点像指数级增长。在超过80%以后，由于是概率比较小的长尾key的影响，失去了空间局部性，提升基本就是线性的了，增加cahce容积获得命中率提升性价比比较低。&lt;/p&gt;
+</content>
+  </entry>
   
   <entry>
     <title>分布式系统分片的艺术(2017-6.824 Lab4)</title>

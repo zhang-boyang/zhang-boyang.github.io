@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0">
+        <link rel="alternate" type="application/rss+xml" href="/atom.xml" />
+        <link rel="shortcut icon" type="image/png" href="/images/icon.jpg" />
+        <link href="https://fonts.googleapis.com/css?family=PT+Sans:400,400italic,700|Abril+Fatface" rel="stylesheet">
+        <link href="https://fonts.googleapis.com/css?family=PT+Serif" rel="stylesheet">
+        <link rel="stylesheet" href="/assets/css/bootstrap.min.css">
+        <link rel="stylesheet" href="/assets/css/share.min.css">
+        <link rel="stylesheet" href="/assets/css/highlight/github-gist.css">
+        <script src="/assets/js/jquery.min.js"></script>
+        <script src="/assets/js/jquery.share.min.js"></script>
+        <script src="/assets/js/highlight.pack.js"></script>
+        <script type="text/javascript" src="https://cdn.mathjax.org/mathjax/latest/MathJax.js?config=default"></script>
+        <script> hljs.initHighlightingOnLoad(); </script>
+        
+        <title>LRU算法建模 | Note of John Brown</title>
+        
+    </head>
+    <body>
+        <div class="container-fluid">
+            <div class="row row-header">
+                <div class="col-md-6 col-md-offset-3">
+                    <ul class="list-inline list-nav">
+                        <li><a href="/"><b>Note of John Brown</b></a></li>
+                        <li><a href="/archive">archive</a></li>
+                        <li><a href="/about">about</a></li>
+                        <li><a href="/atom.xml">atom</a></li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="row">
+                <div class="col-xs-12 col-sm-12 col-md-6 col-md-offset-3 col-main">
+                    <div class="content">
+    <h1>LRU算法建模</h1>
+
+    <h2 id="id-什么是lruleast-recently-used">什么是LRU(Least-Recently Used)</h2>
+
+<ul>
+  <li>
+    <p>缓存的队列长度(容量)为<script type="math/tex">S</script>, 一共有<script type="math/tex">K</script>的项, K » S &gt; 0。</p>
+  </li>
+  <li>
+    <p>每一个缓存项被访问的概率为<script type="math/tex">\alpha_k</script>, <script type="math/tex">k\subseteq(1, K)</script></p>
+  </li>
+  <li>
+    <p>当某个缓存项被命中后，它会被移到缓存的第一位。如果某项没有被命中，会被存入第一位，此时，如果缓存队列容量大于<script type="math/tex">S</script>，最末尾的缓存项会被移除缓存队列。</p>
+  </li>
+</ul>
+
+<h2 id="id-kingflagolet-模型公式">King，Flagolet 模型公式</h2>
+
+<p>最早提出计算LRU未命中的概率计算是由W.F.King提出的计算公式：
+<script type="math/tex">s</script> 为cache的容量。每一项为<script type="math/tex">p_i,i\in[1..K], \sum_{i=1}^Kp_{i}=1</script></p>
+
+<script type="math/tex; mode=display">P_{miss} = \sum_{s-tuple\{i_1,i_2,\dots,i_s\}\\  i_1\neq i_2\neq i_3 \neq \dotsc \neq i_s} p_{i_1}\frac{p_{i_2}}{1 - p_{i_1}}\frac{p_{i_3}}{1-p_{i_1}-p_{i_2}}\dotsc\frac{p_{i_s}}{1-p_{i_1}-p_{i_2}-\dotsc p_{i_{s-1}}}(1-p_{i_1}-p_{i_2}-\dotsc p_{i_s})</script>
+
+<p>这个公式倒是比较好理解,不过计算起来比较麻烦，<script type="math/tex">s-tuple</script>为<script type="math/tex">p_i,i\in[1..K]</script>的排列<script type="math/tex">A_{K}^S</script></p>
+
+<p>Flajolet等人在92年一片论文(Birthday paradox, coupon collectors, caching algorithms and self-organizing search)中论证了</p>
+
+<script type="math/tex; mode=display">1 - P_{miss} = \sum_{q=0}^{s-1}[u^q]\int_0^\infty (\prod_{i=1}^s(1+u(e^{p_{i}t} - 1)))(\sum_{i=1}^m{\frac{p^2_i}{1+u(e^{p_{i}t }-1)}})e^{-t}\mathrm{d}x</script>
+
+<p>推倒中用到了生成函数和Laplace-Borel transform，这个公式其实我没太看懂。</p>
+
+<p>在<a href="https://arxiv.org/abs/1607.01283">Identity of King and Flajolet &amp; al. Formulae for LRU Miss Rate Exact Computation</a>论文中，作者Christian Berthet证明了King与Flajolet两个公式为等价的。</p>
+
+<h2 id="id-马尔可夫过程模型">马尔可夫过程模型</h2>
+
+<p>这个方法借鉴了<a href="https://ieeexplore.ieee.org/abstract/document/6614153/">Modeling Hierarchical Caches in Content-Centric Networks</a>这片论文中模型的设计方法。</p>
+
+<p>用Markov chain建模计算LRU命中率的方法，相比于King的方法将时间空间由指数降为了平方阶。
+<img src="/images/lru_pic/markov_chain.png" alt="markov_lru" /></p>
+
+<p>在此图中，</p>
+<blockquote>
+  <p>一共有<script type="math/tex">M = S + 1</script>个状态，其中状态<script type="math/tex">M</script>为miss，即未在队列。
+<script type="math/tex">P_{i,j}</script> 为一次访问后状态从状态<script type="math/tex">p_i</script>到<script type="math/tex">p_j</script>。一共有四种转换的情况</p>
+</blockquote>
+
+<ol>
+  <li><script type="math/tex">P_{i,i}, i\subseteq[2, S]</script>,在一次访问后，其队列的位置没有发生变化</li>
+  <li><script type="math/tex">P_{M,M}</script>, 在一次访问中，其还出为未被缓存的状态</li>
+  <li><script type="math/tex">P_{i-1, i}, i\subseteq[2, M]</script>, 在一次访问中，其队列位置向后一位</li>
+  <li><script type="math/tex">P_{i,1}, i\subseteq[1, M]</script>, 在一次访问中，被命中，被移动到队列的第一位</li>
+</ol>
+
+<p>设缓存项<script type="math/tex">k</script>,在<script type="math/tex">p_i</script>状态的概率为<script type="math/tex">p_k(i)</script>, <script type="math/tex">b_k = \sum_{t=1}^{k}p_k(t)</script>
+<script type="math/tex">P_{i,i} = \sum_{t=1}^{K}\alpha_tb_t(i-1)</script></p>
+
+<script type="math/tex; mode=display">P_{M,M} = 1 - \alpha_k</script>
+
+<script type="math/tex; mode=display">P_{i-1,i} = 1 - \sum_{t=1}^{K}\alpha_tb_t(t-2) - \alpha_k</script>
+
+<script type="math/tex; mode=display">P_{i,1} = \alpha_k</script>
+
+<p>根据这些转移概率，可以写出其平衡方程组：
+<script type="math/tex">% <![CDATA[
+\begin{cases}
+    \pi_1 &= \alpha_k\sum_{i=1}^{K}\pi_i&\\
+    \pi_i & = P_{i,i}\pi_i + P_{i-1,i}\pi_{i-1}&   {i \subseteq[2,M]}
+\end{cases} %]]></script></p>
+
+<p><script type="math/tex">p_k(i) = \pi_i</script>,那么<script type="math/tex">p_k(i)</script>的递归求解公式为：</p>
+
+<script type="math/tex; mode=display">p_k(i) = p_k(i-1)\frac{1-\sum_{t=1}^{K}\alpha_tb_t(i-2)-\alpha_k}{1- \sum_{t=1}^{K}\alpha_tb_t(i-1)},i\subseteq[2,M]</script>
+
+<p>其中<script type="math/tex">p_k(1)=\alpha_k</script></p>
+
+<p>这样以来，项<script type="math/tex">k</script>的命中率<script type="math/tex">h_k=\sum_{i=1}^{S}p_k(i)</script>,整体LRU在稳定状态下的命中率即为：
+<script type="math/tex">H=\sum_{k = 1}^{K}\alpha_kh_k</script></p>
+
+<p>下面是用计算机模拟生成数据和使用马尔可夫模型推倒的公式的对比。数据是生产中遇到的数据。</p>
+
+<ul>
+  <li>请求服务的key中500个头部key占总请求的50%</li>
+  <li>请求服务的key中3500个中部key占总请求的35%</li>
+  <li>请求服务的key中100000个尾部key占总请求的15%</li>
+</ul>
+
+<p>下图可以看到，在模拟按概率请求的结果与公式推倒的结果是吻合的。</p>
+
+<p><img src="/images/lru_pic/lru_hit_ration_sim.png" alt="hit_ratio" /></p>
+
+<p>从结果也可以看出，在刚开始增大cache的容积，对命中率有显著地提升。命中率趋势有点像指数级增长。在超过80%以后，由于是概率比较小的长尾key的影响，失去了空间局部性，提升基本就是线性的了，增加cahce容积获得命中率提升性价比比较低。</p>
+
+
+    
+      <p>
+        <span class="gray">19 Dec 2019 by John Brown </span>
+      </p>
+    
+</div>
+
+<div class="social-sharing"></div>
+
+<script type="text/javascript">
+$(function(){
+    $('.social-sharing').share({
+        sites: ['wechat'],
+    });
+});
+</script>
+
+<div class="comments">
+    <div id="disqus_thread"></div>
+</div>
+
+<script type="text/javascript">
+/* * * CONFIGURATION VARIABLES: EDIT BEFORE PASTING INTO YOUR WEBPAGE * * */
+var disqus_shortname = 'NoteOfJohnBrown'; // required: replace example with your forum shortname
+var disqus_developer = 1;
+
+/* * * DON'T EDIT BELOW THIS LINE * * */
+(function() {
+    var dsq = document.createElement('script'); dsq.type = 'text/javascript'; dsq.async = true;
+    dsq.src = 'https://' + disqus_shortname + '.disqus.com/embed.js';
+    (document.getElementsByTagName('head')[0] || document.getElementsByTagName('body')[0]).appendChild(dsq);
+})();
+</script>
+
+                </div>
+            </div>
+        </div>
+    <link rel="stylesheet" href="/assets/css/blog.css">
+    </body>
+</html>

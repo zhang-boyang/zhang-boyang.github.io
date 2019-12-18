@@ -35,6 +35,21 @@
             <div class="row">
                 <div class="col-xs-12 col-sm-12 col-md-6 col-md-offset-3 col-main">
                     
+  <h1><a href="/2018/05/22/6.824-Lab6-7-Replicated-State-Machine.html">6.824:Lab6-7 Replicated State Machine</a></h1>
+
+  <div class="content">
+
+    
+      <h1 id="id-paxos">Paxos</h1> <h2 id="id-introduction">Introduction</h2> <p>在实验6-7中，将使用RSM（replicated state machine）的方法复写锁服务，在这个方法中，有一个节点为master，master接收来自client节点的请求并在所有的节点以相同的方式在所有的副本下执行。</p> <p>当master节点失败，任何一个副本都会接管master的工作，因为这些副本都与那个失败的节点有着相同的状态。其中一个比较有挑战性任务时确保集群中的每一个节点所接受的信息是一致的（即哪些是副本，谁是master，哪些副本是keepalive的），即使存在网络分裂（network partition）或者是乱序的情况，数据仍然要保持一致。这里我们使用Paxos协议来实现这一策略。</p> <p>在此次实验中，将要实现Paxos并使用达成集群成员的改变（view...
+      <br/>
+      <a href="/2018/05/22/6.824-Lab6-7-Replicated-State-Machine.html">read more</a>
+   
+
+    <p>
+      <span class="gray">22 May 2018 by John Brown</span>
+    </p>
+  </div>
+
   <h1><a href="/2018/05/22/6.824-Lab4-5-Cache.html">6.824:Lab4-5 Cache</a></h1>
 
   <div class="content">
