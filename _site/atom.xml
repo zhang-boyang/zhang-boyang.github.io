@@ -2,7 +2,7 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
 
   <title>Note of John Brown</title>
-  <updated>2019-12-19T00:28:17+08:00</updated>
+  <updated>2019-12-19T00:34:37+08:00</updated>
   <id></id>
   <author>
     <name>John Brown</name>
@@ -66,8 +66,9 @@
   &lt;li&gt;&lt;script type=&quot;math/tex&quot;&gt;P_{i,1}, i\subseteq[1, M]&lt;/script&gt;, 在一次访问中，被命中，被移动到队列的第一位&lt;/li&gt;
 &lt;/ol&gt;
 
-&lt;p&gt;设缓存项&lt;script type=&quot;math/tex&quot;&gt;k&lt;/script&gt;,在&lt;script type=&quot;math/tex&quot;&gt;p_i&lt;/script&gt;状态的概率为&lt;script type=&quot;math/tex&quot;&gt;p_k(i)&lt;/script&gt;, &lt;script type=&quot;math/tex&quot;&gt;b_k = \sum_{t=1}^{k}p_k(t)&lt;/script&gt;
-&lt;script type=&quot;math/tex&quot;&gt;P_{i,i} = \sum_{t=1}^{K}\alpha_tb_t(i-1)&lt;/script&gt;&lt;/p&gt;
+&lt;p&gt;设缓存项&lt;script type=&quot;math/tex&quot;&gt;k&lt;/script&gt;,在&lt;script type=&quot;math/tex&quot;&gt;p_i&lt;/script&gt;状态的概率为&lt;script type=&quot;math/tex&quot;&gt;p_k(i)&lt;/script&gt;, &lt;script type=&quot;math/tex&quot;&gt;b_k = \sum_{t=1}^{k}p_k(t)&lt;/script&gt;&lt;/p&gt;
+
+&lt;script type=&quot;math/tex; mode=display&quot;&gt;P_{i,i} = \sum_{t=1}^{K}\alpha_tb_t(i-1)&lt;/script&gt;
 
 &lt;script type=&quot;math/tex; mode=display&quot;&gt;P_{M,M} = 1 - \alpha_k&lt;/script&gt;
 
