@@ -2,13 +2,149 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
 
   <title>Note of John Brown</title>
-  <updated>2020-02-08T17:32:30+08:00</updated>
+  <updated>2020-04-15T00:30:24+08:00</updated>
   <id></id>
   <author>
     <name>John Brown</name>
     <email></email>
   </author>
 
+  
+  <entry>
+    <title>File Systems Unfit as Distributed Storage Backends : Lessons From 10 Years of Ceph Evolution</title>
+    <link href="http://localhost:4000//2020/04/15/%E6%96%87%E4%BB%B6%E7%B3%BB%E7%BB%9F(%E6%9C%AC%E5%9C%B0)%E4%B8%8D%E9%80%82%E5%90%88%E5%81%9A%E5%88%86%E5%B8%83%E5%BC%8F%E5%AD%98%E5%82%A8%E5%90%8E%E7%AB%AF-Ceph%E6%BC%94%E5%8F%9810%E5%B9%B4%E7%9A%84%E7%BB%8F%E9%AA%8C%E6%95%99%E8%AE%AD.html"/>
+    <updated>2020-04-15T00:00:00+08:00</updated>
+    <id>//2020/04/15/文件系统(本地)不适合做分布式存储后端:Ceph演变10年的经验教训</id>
+    <content type="html">&lt;h1 id=&quot;id-文件系统本地不适合做分布式存储后端ceph演变10年的经验教训&quot;&gt;文件系统(本地)不适合做分布式存储后端:Ceph演变10年的经验教训&lt;/h1&gt;
+
+&lt;p&gt;&lt;strong&gt;&lt;em&gt;最近读了一篇关于Ceph后端BlueStore的论文，该论文发表在SOSP’19的会议上。讲了ceph分布式文件系统的存储后端的不断演变的经验教训，主要在这里做一个论文笔记。&lt;/em&gt;&lt;/strong&gt;&lt;/p&gt;
+
+&lt;h2 id=&quot;id-abstract&quot;&gt;Abstract&lt;/h2&gt;
+
+&lt;p&gt;在过去的10年中，Ceph遵循了传统的本地文件系统作为Ceph分布式文件系统的后端。应为传统的文件系统久经沙场，非常的成熟。但是也带了了一些问题，最主要的有&lt;/p&gt;
+
+&lt;ol&gt;
+  &lt;li&gt;构建0开销的事务处理机制很难&lt;/li&gt;
+  &lt;li&gt;在本地级别的元数据性能会显著地影响整个分布式文件系统&lt;/li&gt;
+  &lt;li&gt;对新兴的存储设备文件系统的支持非常缓慢&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;p&gt;针对这些问题，Ceph卡法了BlueStore，一个直接针对裸盘的后端。仅仅诞生了2年，但是有70%的用户所承认。因为其运行在用户态并完全控制I/O栈，所以能使元数据空间利用率很高并且做到数据校验，快速覆写纠删码，内联压缩，减少一系列本地文件系统带来的性能陷阱。&lt;/p&gt;
+
+&lt;h2 id=&quot;id-background&quot;&gt;BackGround&lt;/h2&gt;
+
+&lt;p&gt;Ceph 文件系统的架构如下图所示：&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/bluefs/bluefs_1.png&quot; alt=&quot;bulefs_1&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;其中RADOS(Reliable Autonomic Distributed Object)是Ceph的核心系统。&lt;code&gt;librados&lt;/code&gt;提供了转换和操控的接口。为上层提供对象，块和文件系统服务。
+RADOS的逻辑组成使是由pools组成。每一个pool是PGs的单元组成，映射到各个OSD上。映射的方法使使用伪随机算法CRUSH。&lt;/p&gt;
+
+&lt;h2 id=&quot;id-在本地文件系统构建存储后端很困难&quot;&gt;在本地文件系统构建存储后端很困难&lt;/h2&gt;
+
+&lt;h3 id=&quot;id-挑战1-高效事务处理&quot;&gt;挑战1 高效事务处理&lt;/h3&gt;
+
+&lt;p&gt;本地文件系统作为后端有三种方法&lt;/p&gt;
+
+&lt;p&gt;3.1.1 利用文件系统内部的事务处理方式
+有一些文件系统使没有自带事务处理的，因为没有必要在一个本地文件系统上去确保内部之一。 Btrfs给用户提供两个系统调用。FileStore开始就使这么使用的，但是常常会出问题，比如遇到软件crash或者kill命令。这样Btrfs就无法保证存储后端是一个一致的状态。通过快照回滚的开销也很大，Btrfs最近也放弃了事务型系统调用。微软也尝试使用NTFS的内核事务框架提供原子文件事务API，但是最终因为高准入门槛而放弃了。&lt;/p&gt;
+
+&lt;p&gt;3.1.2 在用户态使用WAL
+在用户态实现WAL(Wirte-Ahead Log)。这种方法存在三种问题&lt;/p&gt;
+&lt;ol&gt;
+  &lt;li&gt;RMW(read-modify-write 先读旧数据，与新数据一起合并写) 非常慢，事务要序列化然后写日志。还要调用fsync落盘，最后要应用到文件系统中。&lt;/li&gt;
+  &lt;li&gt;非等幂操作 1⃣️ clone a→b; 2⃣️ update a; 3⃣️ update c。如果在第二步后crash那么WAL会修复b。在1⃣️ update b; 2⃣️ rename b→c; 3⃣️ rename a→b; 4⃣️ update d这个事务操作中，遇到在第3步后crash的话，WAL回复就会在update b时找不到b。&lt;/li&gt;
+  &lt;li&gt;双写 在本地操作中会遇到I/O放大的情况。&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;p&gt;3.1.3 使用K-V存储做为WAL&lt;/p&gt;
+
+&lt;p&gt;首先用户态的WAL的问题可以避免。但是RocksDB中存在的问题即日志文件系统会带来高一致性的开销。&lt;/p&gt;
+
+&lt;h3 id=&quot;id-挑战2-快速元数据操作&quot;&gt;挑战2 快速元数据操作&lt;/h3&gt;
+&lt;p&gt;在ceph中需要做到经常的枚举本地文件系统的目录，而且遍历后的顺序使无序的。在RADOS中，由于使用文件的文件路径与文件名hash标示，还有一些scrubbing，recovery等操作，这些都需要枚举和排序。本地文件系统做这个比较慢。&lt;/p&gt;
+
+&lt;h3 id=&quot;id-挑战3-支持新的存储硬件&quot;&gt;挑战3 支持新的存储硬件&lt;/h3&gt;
+&lt;p&gt;目前而言本地文件系统对于新型的存储硬件特性支持不是很好比如 SMR和ZNS 特性。&lt;/p&gt;
+
+&lt;h3 id=&quot;id-其他挑战&quot;&gt;其他挑战&lt;/h3&gt;
+&lt;p&gt;无法完全控制I/O栈，比如文件系统的页缓存，无法有效掌控SLO(service level objectives)。&lt;/p&gt;
+
+&lt;h2 id=&quot;id-bluestore-一个全新的方法&quot;&gt;BlueStore: 一个全新的方法&lt;/h2&gt;
+
+&lt;p&gt;BlueStore一个精简了的文件系统，是POSIX I/O的子集，为RocksDB量身定做。在用户态，能够使用比较好的第三方库。可控的I/O栈，能够实现很多特性。&lt;/p&gt;
+&lt;ol&gt;
+  &lt;li&gt;快速元数据操作&lt;/li&gt;
+  &lt;li&gt;没有固定的对象写操作&lt;/li&gt;
+  &lt;li&gt;实现COW操作&lt;/li&gt;
+  &lt;li&gt;没有日志双写&lt;/li&gt;
+  &lt;li&gt;为HDD和SSD优化I/O&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;h3 id=&quot;id-bluefs和rocksdb&quot;&gt;BlueFS和RocksDB&lt;/h3&gt;
+
+&lt;p&gt;下图是BlueStore的整体架构&lt;/p&gt;
+
+&lt;p&gt;&lt;img src=&quot;/images/bluefs/bluefs_2.png&quot; alt=&quot;bluefs_2&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;下图是BlueFs在一个磁盘布局。metadata放在日志中，日志没有固定的位置。WAL LOG和SST都是RocksDB产生的文件。
+&lt;img src=&quot;/images/bluefs/bluefs_3.png&quot; alt=&quot;bluefs_3&quot; /&gt;&lt;/p&gt;
+
+&lt;p&gt;元数据的组织：在BlueFS中有多种命名空间
+O for object 的命名空间
+C for collect的元数据
+B for block的元数据&lt;/p&gt;
+
+&lt;h3 id=&quot;id-路径与空间分配&quot;&gt;路径与空间分配&lt;/h3&gt;
+&lt;p&gt;BlueStore是一个提供COW的后端。这样做能够很好的做到高效clone，避免日志双写等。&lt;/p&gt;
+&lt;blockquote&gt;
+  &lt;p&gt;采用ROW（Redirect on write）的方式，即数据需要覆盖写入时，将数据写到新的位置，然后更新元数据索引，这种方式由于不存在覆盖写，只需保证元数据更新的原子性即可。&lt;/p&gt;
+&lt;/blockquote&gt;
+
+&lt;p&gt;比allocator默认大小小的数据写入，先存放在RocksDB中。可以批处理操作，根据设备的类型优化I/O&lt;/p&gt;
+
+&lt;p&gt;由于在用户态操作磁盘I/O，不能使用操作系统自带的页面cache。所以自己实现了Q2算法的一个cache。&lt;/p&gt;
+
+&lt;h2 id=&quot;id-bluestore实现的特性&quot;&gt;BlueStore实现的特性&lt;/h2&gt;
+
+&lt;ol&gt;
+  &lt;li&gt;空间利用率高的校验码。每次操作都有。默认使用crc32c，cpu框架自带，效率高。而且根据类型的不同I/O做压缩校验。&lt;/li&gt;
+  &lt;li&gt;实现覆写纠删码数据&lt;/li&gt;
+  &lt;li&gt;透明的数据压缩&lt;/li&gt;
+  &lt;li&gt;使用了SMR特性的接口&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;h2 id=&quot;id-性能评估&quot;&gt;性能评估&lt;/h2&gt;
+
+&lt;p&gt;就是BlueStore比FileStore牛逼太多
+无论是吞吐：
+&lt;img src=&quot;/images/bluefs/bluefs_4.png&quot; alt=&quot;bluefs_4&quot; /&gt;
+还是时延
+&lt;img src=&quot;/images/bluefs/bulefs_5.png&quot; alt=&quot;bluefs_5&quot; /&gt;
+还是块存储性能
+&lt;img src=&quot;/images/bluefs/bluefs_6.png&quot; alt=&quot;bluefs_6&quot; /&gt;&lt;/p&gt;
+
+&lt;h2 id=&quot;id-在裸盘上构建高效存储后端的挑战&quot;&gt;在裸盘上构建高效存储后端的挑战&lt;/h2&gt;
+
+&lt;h3 id=&quot;id-缓存大小和回写&quot;&gt;缓存大小和回写&lt;/h3&gt;
+
+&lt;p&gt;没有本地文件系统使用操作系统的缓存，由系统调度写入。而BlueStore需要自己去实现，而且要做到不能影响系统的性能。&lt;/p&gt;
+
+&lt;h3 id=&quot;id-kv存储效率&quot;&gt;kv存储效率&lt;/h3&gt;
+
+&lt;p&gt;在使用NVMe中 RocksDB存在写放大，RocksDB自身数据序列化与拷贝是黑箱的，RocksDB自我特性导致性能抖动&lt;/p&gt;
+
+&lt;h3 id=&quot;id-高效利用cpu与内存&quot;&gt;高效利用CPU与内存&lt;/h3&gt;
+
+&lt;p&gt;减少数据序列化与反序列化。使用SeaStar框架避免上下文切换导致的锁。&lt;/p&gt;
+
+&lt;p&gt;在读论文中还参考了&lt;/p&gt;
+
+&lt;p&gt;【1】https://zhuanlan.zhihu.com/p/45084771&lt;/p&gt;
+
+&lt;p&gt;【2】https://zhuanlan.zhihu.com/p/106096265&lt;/p&gt;
+</content>
+  </entry>
   
   <entry>
     <title>raft只读操作优化</title>

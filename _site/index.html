@@ -35,6 +35,21 @@
             <div class="row">
                 <div class="col-xs-12 col-sm-12 col-md-6 col-md-offset-3 col-main">
                     
+  <h1><a href="/2020/04/15/%E6%96%87%E4%BB%B6%E7%B3%BB%E7%BB%9F(%E6%9C%AC%E5%9C%B0)%E4%B8%8D%E9%80%82%E5%90%88%E5%81%9A%E5%88%86%E5%B8%83%E5%BC%8F%E5%AD%98%E5%82%A8%E5%90%8E%E7%AB%AF-Ceph%E6%BC%94%E5%8F%9810%E5%B9%B4%E7%9A%84%E7%BB%8F%E9%AA%8C%E6%95%99%E8%AE%AD.html">File Systems Unfit as Distributed Storage Backends : Lessons From 10 Years of Ceph Evolution</a></h1>
+
+  <div class="content">
+
+    
+      <h1 id="id-文件系统本地不适合做分布式存储后端ceph演变10年的经验教训">文件系统(本地)不适合做分布式存储后端:Ceph演变10年的经验教训</h1> <p><strong><em>最近读了一篇关于Ceph后端BlueStore的论文，该论文发表在SOSP’19的会议上。讲了ceph分布式文件系统的存储后端的不断演变的经验教训，主要在这里做一个论文笔记。</em></strong></p> <h2 id="id-abstract">Abstract</h2> <p>在过去的10年中，Ceph遵循了传统的本地文件系统作为Ceph分布式文件系统的后端。应为传统的文件系统久经沙场，非常的成熟。但是也带了了一些问题，最主要的有</p> <ol> <li>构建0开销的事务处理机制很难</li> <li>在本地级别的元数据性能会显著地影响整个分布式文件系统</li> <li>对新兴的存储设备文件系统的支持非常缓慢</li>...
+      <br/>
+      <a href="/2020/04/15/%E6%96%87%E4%BB%B6%E7%B3%BB%E7%BB%9F(%E6%9C%AC%E5%9C%B0)%E4%B8%8D%E9%80%82%E5%90%88%E5%81%9A%E5%88%86%E5%B8%83%E5%BC%8F%E5%AD%98%E5%82%A8%E5%90%8E%E7%AB%AF-Ceph%E6%BC%94%E5%8F%9810%E5%B9%B4%E7%9A%84%E7%BB%8F%E9%AA%8C%E6%95%99%E8%AE%AD.html">read more</a>
+   
+
+    <p>
+      <span class="gray">15 Apr 2020 by John Brown</span>
+    </p>
+  </div>
+
   <h1><a href="/2020/02/08/raft%E5%8F%AA%E8%AF%BB%E6%93%8D%E4%BD%9C%E4%BC%98%E5%8C%96.html">raft只读操作优化</a></h1>
 
   <div class="content">
@@ -107,21 +122,6 @@
 
     <p>
       <span class="gray">29 Jan 2019 by John Brown</span>
-    </p>
-  </div>
-
-  <h1><a href="/2018/08/20/ThreadPool,-Coroutine,-Promise%E4%B8%8EFuture.html">ThreadPool, Coroutine, Promise与Future</a></h1>
-
-  <div class="content">
-
-    
-      <h1 id="id-threadpool-coroutine-promise与future">ThreadPool, Coroutine, Promise与Future</h1> <h2 id="id-threadpool">ThreadPool</h2> <p>线程池，顾名思义，就是放着很多线程的大“池子”。主要用作并发量大，但每个任务需要处理的时间不是很长。比如接受或者发送网络请求的任务。之所以使用线程池，原因就是在线程的传创建和销毁在高并发先开销十分大，如果将线程先创建好放入“池子”中待命，随用随取。降低不必要的开销十分划算。</p> <p>实现也非常的简单，创建队列，使用生产消费者模型（向队列中增加任务即生产者，将任务执行完成即消费者）。主要实现逻辑如下：</p> <pre><code class="language-c++">ThreadPool::ThreadPool(int...
-      <br/>
-      <a href="/2018/08/20/ThreadPool,-Coroutine,-Promise%E4%B8%8EFuture.html">read more</a>
-   
-
-    <p>
-      <span class="gray">20 Aug 2018 by John Brown</span>
     </p>
   </div>
 
