@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0">
+        <link rel="alternate" type="application/rss+xml" href="/atom.xml" />
+        <link rel="shortcut icon" type="image/png" href="/images/icon.jpg" />
+        <link href="https://fonts.googleapis.com/css?family=PT+Sans:400,400italic,700|Abril+Fatface" rel="stylesheet">
+        <link href="https://fonts.googleapis.com/css?family=PT+Serif" rel="stylesheet">
+        <link rel="stylesheet" href="/assets/css/bootstrap.min.css">
+        <link rel="stylesheet" href="/assets/css/share.min.css">
+        <link rel="stylesheet" href="/assets/css/highlight/github-gist.css">
+        <script src="/assets/js/jquery.min.js"></script>
+        <script src="/assets/js/jquery.share.min.js"></script>
+        <script src="/assets/js/highlight.pack.js"></script>
+        <script type="text/javascript" src="https://cdn.mathjax.org/mathjax/latest/MathJax.js?config=default"></script>
+        <script> hljs.initHighlightingOnLoad(); </script>
+        
+        <title>Basic Paxos 证明 | Note of John Brown</title>
+        
+    </head>
+    <body>
+        <div class="container-fluid">
+            <div class="row row-header">
+                <div class="col-md-6 col-md-offset-3">
+                    <ul class="list-inline list-nav">
+                        <li><a href="/"><b>Note of John Brown</b></a></li>
+                        <li><a href="/archive">archive</a></li>
+                        <li><a href="/about">about</a></li>
+                        <li><a href="/atom.xml">atom</a></li>
+                    </ul>
+                </div>
+            </div>
+
+            <div class="row">
+                <div class="col-xs-12 col-sm-12 col-md-6 col-md-offset-3 col-main">
+                    <div class="content">
+    <h1>Basic Paxos 证明</h1>
+
+    <p>Paxos是Leslie Lamport为解决集群各个节点共识提出的算法。其中最重要和最基础的是Basic Paxos。
+首先给出伪代码简单说明整个Basic的算法细节。接下来接需要证明Basic Paxos确实能够保证使集群达成共识。</p>
+
+<h2 id="id-basic-paxos算法展示">Basic Paxos算法展示</h2>
+
+<p>伪代码，参考[1],这里省去[1]中的instance，只列出在同一instance下，如何达成共识。</p>
+
+<p>Proposer 的逻辑</p>
+
+<pre><code class="language-c++">Proposer::Run(value V) {
+    proposalN = ChooseN();   //选择一个唯一且比见过的都大的N值
+    //调用集群中每一个节点的acceptor::prepare 接口。
+    //包括自己的（Proposer 自己也要接受自己的提议。这时，自己也是accpotor）
+    for (acceptor :  ALL) {
+        //phase 1
+        prepare_results.push_back(acceptor.Prepare(proposalN));
+    }
+    if Quorums(prepare_results) {
+        //如果过收获了法定数（&gt; ALL / 2）的prepare_ok.
+        //将v`置为返回中最大n_a的v_a,如果v`都没有的话等于入参V
+        v` = FindMaxNa(results);
+        if (v` == null) {
+            v` = V;
+        }
+        for (acceptor : ALL) {
+            //phase 2
+            accept_results.push_back(acceptor.Accept(proposalN, v`))
+        }
+        //  如果法定人数的acceptor Accept了提议，那么就意味着达成共识。进行commit
+        if Quorums(accept_results) {
+            for (acceptor : ALL) {
+                //phase 3
+                acceptor.Decide(v`)
+            }
+        }
+    }
+}
+</code></pre>
+
+<p>Acceptor 的逻辑</p>
+
+<pre><code class="language-c++">Acceptor {
+    HightN = 0; //目前见到的最大的n
+    AcceptN = 0;//当前接受V的N值
+    AcceptV = null; //当前接受的V值
+
+    (is_ok, n_a, n_v) Acceptor::Prepare(proposalN) {
+        if (proposalN &gt; HightN) {
+            HightN = proposalN;
+            return true, AcceptN, AcceptV
+        }
+        return false, null, null
+    }
+
+    (is_ok) Acceptor::Accept(proposalN, V) {
+        if (proposalN &gt;= HightN) {
+            HightN = proposalN;
+            AcceptN = proposalN;
+            AcceptV = V;
+            return true;
+        }
+        return false;
+    }
+
+    void Acceptor::Decide(V) {
+        paxos_commit(V);
+    }
+};
+</code></pre>
+
+<p>Paxos中最精彩和关键的就是某个提案被大多数acceptor<strong>被选定</strong>了，那么这个提案就是共识的提案了。</p>
+
+<p>证明过程参考[2]
+定义：</p>
+
+<ol>
+  <li>提案proposal(N, v) <strong>被接受</strong>，即至少有一个acceptor接受了这个proposal(N, v)。</li>
+  <li>提案proposal(N, v) <strong>被选定</strong>，即proposal(N, v)被有符合法定节点个数（大于总节点的1/2）的节点接受。</li>
+</ol>
+
+<p>用数学的语言描述就是“<em>某个提案被大多数acceptor选定了，那么这个提案就是共识的提案了</em>”就是：</p>
+
+<p>任意两个<strong>被选定</strong>的提案proposal(M, U)，proposal(M`, W)。 那么U一定等于W。</p>
+
+<p>下面为证明过程：</p>
+
+<p>当<script type="math/tex">M'\gt M</script> 时，假设<script type="math/tex">U\neq W</script>。</p>
+
+<p>设当<script type="math/tex">N \gt M</script>，提案proposal(N, V) 为提案proposal(M, U)后<script type="math/tex">N</script>值最小的且<script type="math/tex">V\neq U</script>值的被接受的提案【*】。那么在<script type="math/tex">N > K \geq M</script>时，提案proposal(K, value) 的value <script type="math/tex">= U</script>【**】。</p>
+
+<ul>
+  <li>
+    <p>因为提案proposal(M, U)被选定，那么proposal(M, U)必然被法定人数的节点所接受。设接受这个proposal(M, U)的集合为<script type="math/tex">M_1</script>.</p>
+  </li>
+  <li>
+    <p>又因为提案proposal(N, V)被接受，proposer在prepare阶段获得了法定人数的同意，设这个法定人数同意的集合为<script type="math/tex">M_2</script>，且<script type="math/tex">M_2</script>中至少有一个节点返回了(true, K, value=V)给proposer。</p>
+  </li>
+</ul>
+
+<p>那么<script type="math/tex">\forall q \in M_1\cap M_2</script></p>
+<ul>
+  <li>
+    <p>因为<script type="math/tex">q\in M_1</script>,那么<script type="math/tex">q</script>接受了proposal(M, U)。</p>
+  </li>
+  <li>
+    <p>又因为<script type="math/tex">q\in M_2</script>, 那么<script type="math/tex">q</script>给proposer发送了(K, value)。</p>
+  </li>
+</ul>
+
+<p>因为 <script type="math/tex">N > M</script>, 所以<script type="math/tex">q</script>在返回给proposer (true, K, value)时已经接受了proposal(M, U)。
+又因为<script type="math/tex">N > K \geq M</script>， 所以proposer 从包含有(true, K, U)的返回中选择出了<script type="math/tex">V</script>。</p>
+
+<p>设返回给proposer的值(true, J, value), 且 <script type="math/tex">% <![CDATA[
+J < N %]]></script>:</p>
+
+<ol>
+  <li>如果<script type="math/tex">% <![CDATA[
+J < K %]]></script>, 那么proposer不可能选(J, value), 因为算法规定 <strong>将v`置为返回中最大n_a的v_a</strong></li>
+  <li>如果 <script type="math/tex">N > J \geq K</script>, 那么proposer选择(J, value)，又因为 <script type="math/tex">N > J \geq M</script>, (J, value)中value = <script type="math/tex">U</script>【**】; 与假设的U <script type="math/tex">\neq</script> V矛盾【*】。</li>
+</ol>
+
+<p>所以<script type="math/tex">N > M</script>时 <script type="math/tex">U = V</script>， 又因为 <script type="math/tex">M' > M</script> , 对应的<script type="math/tex">W</script>也等于<script type="math/tex">U</script>。</p>
+
+<p>[1] <a href="https://pdos.csail.mit.edu/archive/6.824-2012/labs/lab-6.html">https://pdos.csail.mit.edu/archive/6.824-2012/labs/lab-6.html</a></p>
+
+<p>[2] <a href="http://www.cs.toronto.edu/~samvas/teaching/2415/handouts/paxos-proof.pdf">http://www.cs.toronto.edu/~samvas/teaching/2415/handouts/paxos-proof.pdf</a></p>
+
+
+    
+      <p>
+        <span class="gray">02 Jun 2020 by John Brown </span>
+      </p>
+    
+</div>
+
+<div class="social-sharing"></div>
+
+<script type="text/javascript">
+$(function(){
+    $('.social-sharing').share({
+        sites: ['wechat'],
+    });
+});
+</script>
+
+<div class="comments">
+    <div id="disqus_thread"></div>
+</div>
+
+<script type="text/javascript">
+/* * * CONFIGURATION VARIABLES: EDIT BEFORE PASTING INTO YOUR WEBPAGE * * */
+var disqus_shortname = 'NoteOfJohnBrown'; // required: replace example with your forum shortname
+var disqus_developer = 1;
+
+/* * * DON'T EDIT BELOW THIS LINE * * */
+(function() {
+    var dsq = document.createElement('script'); dsq.type = 'text/javascript'; dsq.async = true;
+    dsq.src = 'https://' + disqus_shortname + '.disqus.com/embed.js';
+    (document.getElementsByTagName('head')[0] || document.getElementsByTagName('body')[0]).appendChild(dsq);
+})();
+</script>
+
+                </div>
+            </div>
+        </div>
+    <link rel="stylesheet" href="/assets/css/blog.css">
+    </body>
+</html>

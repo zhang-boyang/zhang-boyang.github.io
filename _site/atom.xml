@@ -2,13 +2,147 @@
 <feed xmlns="http://www.w3.org/2005/Atom">
 
   <title>Note of John Brown</title>
-  <updated>2020-04-15T00:30:24+08:00</updated>
+  <updated>2020-06-02T00:10:20+08:00</updated>
   <id></id>
   <author>
     <name>John Brown</name>
     <email></email>
   </author>
 
+  
+  <entry>
+    <title>Basic Paxos 证明</title>
+    <link href="http://localhost:4000//2020/06/02/Basic-Paxos-%E8%AF%81%E6%98%8E.html"/>
+    <updated>2020-06-02T00:00:00+08:00</updated>
+    <id>//2020/06/02/Basic Paxos 证明</id>
+    <content type="html">&lt;p&gt;Paxos是Leslie Lamport为解决集群各个节点共识提出的算法。其中最重要和最基础的是Basic Paxos。
+首先给出伪代码简单说明整个Basic的算法细节。接下来接需要证明Basic Paxos确实能够保证使集群达成共识。&lt;/p&gt;
+
+&lt;h2 id=&quot;id-basic-paxos算法展示&quot;&gt;Basic Paxos算法展示&lt;/h2&gt;
+
+&lt;p&gt;伪代码，参考[1],这里省去[1]中的instance，只列出在同一instance下，如何达成共识。&lt;/p&gt;
+
+&lt;p&gt;Proposer 的逻辑&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&quot;language-c++&quot;&gt;Proposer::Run(value V) {
+    proposalN = ChooseN();   //选择一个唯一且比见过的都大的N值
+    //调用集群中每一个节点的acceptor::prepare 接口。
+    //包括自己的（Proposer 自己也要接受自己的提议。这时，自己也是accpotor）
+    for (acceptor :  ALL) {
+        //phase 1
+        prepare_results.push_back(acceptor.Prepare(proposalN));
+    }
+    if Quorums(prepare_results) {
+        //如果过收获了法定数（&amp;gt; ALL / 2）的prepare_ok.
+        //将v`置为返回中最大n_a的v_a,如果v`都没有的话等于入参V
+        v` = FindMaxNa(results);
+        if (v` == null) {
+            v` = V;
+        }
+        for (acceptor : ALL) {
+            //phase 2
+            accept_results.push_back(acceptor.Accept(proposalN, v`))
+        }
+        //  如果法定人数的acceptor Accept了提议，那么就意味着达成共识。进行commit
+        if Quorums(accept_results) {
+            for (acceptor : ALL) {
+                //phase 3
+                acceptor.Decide(v`)
+            }
+        }
+    }
+}
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;Acceptor 的逻辑&lt;/p&gt;
+
+&lt;pre&gt;&lt;code class=&quot;language-c++&quot;&gt;Acceptor {
+    HightN = 0; //目前见到的最大的n
+    AcceptN = 0;//当前接受V的N值
+    AcceptV = null; //当前接受的V值
+
+    (is_ok, n_a, n_v) Acceptor::Prepare(proposalN) {
+        if (proposalN &amp;gt; HightN) {
+            HightN = proposalN;
+            return true, AcceptN, AcceptV
+        }
+        return false, null, null
+    }
+
+    (is_ok) Acceptor::Accept(proposalN, V) {
+        if (proposalN &amp;gt;= HightN) {
+            HightN = proposalN;
+            AcceptN = proposalN;
+            AcceptV = V;
+            return true;
+        }
+        return false;
+    }
+
+    void Acceptor::Decide(V) {
+        paxos_commit(V);
+    }
+};
+&lt;/code&gt;&lt;/pre&gt;
+
+&lt;p&gt;Paxos中最精彩和关键的就是某个提案被大多数acceptor&lt;strong&gt;被选定&lt;/strong&gt;了，那么这个提案就是共识的提案了。&lt;/p&gt;
+
+&lt;p&gt;证明过程参考[2]
+定义：&lt;/p&gt;
+
+&lt;ol&gt;
+  &lt;li&gt;提案proposal(N, v) &lt;strong&gt;被接受&lt;/strong&gt;，即至少有一个acceptor接受了这个proposal(N, v)。&lt;/li&gt;
+  &lt;li&gt;提案proposal(N, v) &lt;strong&gt;被选定&lt;/strong&gt;，即proposal(N, v)被有符合法定节点个数（大于总节点的1/2）的节点接受。&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;p&gt;用数学的语言描述就是“&lt;em&gt;某个提案被大多数acceptor选定了，那么这个提案就是共识的提案了&lt;/em&gt;”就是：&lt;/p&gt;
+
+&lt;p&gt;任意两个&lt;strong&gt;被选定&lt;/strong&gt;的提案proposal(M, U)，proposal(M`, W)。 那么U一定等于W。&lt;/p&gt;
+
+&lt;p&gt;下面为证明过程：&lt;/p&gt;
+
+&lt;p&gt;当&lt;script type=&quot;math/tex&quot;&gt;M'\gt M&lt;/script&gt; 时，假设&lt;script type=&quot;math/tex&quot;&gt;U\neq W&lt;/script&gt;。&lt;/p&gt;
+
+&lt;p&gt;设当&lt;script type=&quot;math/tex&quot;&gt;N \gt M&lt;/script&gt;，提案proposal(N, V) 为提案proposal(M, U)后&lt;script type=&quot;math/tex&quot;&gt;N&lt;/script&gt;值最小的且&lt;script type=&quot;math/tex&quot;&gt;V\neq U&lt;/script&gt;值的被接受的提案【*】。那么在&lt;script type=&quot;math/tex&quot;&gt;N &gt; K \geq M&lt;/script&gt;时，提案proposal(K, value) 的value &lt;script type=&quot;math/tex&quot;&gt;= U&lt;/script&gt;【**】。&lt;/p&gt;
+
+&lt;ul&gt;
+  &lt;li&gt;
+    &lt;p&gt;因为提案proposal(M, U)被选定，那么proposal(M, U)必然被法定人数的节点所接受。设接受这个proposal(M, U)的集合为&lt;script type=&quot;math/tex&quot;&gt;M_1&lt;/script&gt;.&lt;/p&gt;
+  &lt;/li&gt;
+  &lt;li&gt;
+    &lt;p&gt;又因为提案proposal(N, V)被接受，proposer在prepare阶段获得了法定人数的同意，设这个法定人数同意的集合为&lt;script type=&quot;math/tex&quot;&gt;M_2&lt;/script&gt;，且&lt;script type=&quot;math/tex&quot;&gt;M_2&lt;/script&gt;中至少有一个节点返回了(true, K, value=V)给proposer。&lt;/p&gt;
+  &lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;那么&lt;script type=&quot;math/tex&quot;&gt;\forall q \in M_1\cap M_2&lt;/script&gt;&lt;/p&gt;
+&lt;ul&gt;
+  &lt;li&gt;
+    &lt;p&gt;因为&lt;script type=&quot;math/tex&quot;&gt;q\in M_1&lt;/script&gt;,那么&lt;script type=&quot;math/tex&quot;&gt;q&lt;/script&gt;接受了proposal(M, U)。&lt;/p&gt;
+  &lt;/li&gt;
+  &lt;li&gt;
+    &lt;p&gt;又因为&lt;script type=&quot;math/tex&quot;&gt;q\in M_2&lt;/script&gt;, 那么&lt;script type=&quot;math/tex&quot;&gt;q&lt;/script&gt;给proposer发送了(K, value)。&lt;/p&gt;
+  &lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;p&gt;因为 &lt;script type=&quot;math/tex&quot;&gt;N &gt; M&lt;/script&gt;, 所以&lt;script type=&quot;math/tex&quot;&gt;q&lt;/script&gt;在返回给proposer (true, K, value)时已经接受了proposal(M, U)。
+又因为&lt;script type=&quot;math/tex&quot;&gt;N &gt; K \geq M&lt;/script&gt;， 所以proposer 从包含有(true, K, U)的返回中选择出了&lt;script type=&quot;math/tex&quot;&gt;V&lt;/script&gt;。&lt;/p&gt;
+
+&lt;p&gt;设返回给proposer的值(true, J, value), 且 &lt;script type=&quot;math/tex&quot;&gt;% &lt;![CDATA[
+J &lt; N %]]&gt;&lt;/script&gt;:&lt;/p&gt;
+
+&lt;ol&gt;
+  &lt;li&gt;如果&lt;script type=&quot;math/tex&quot;&gt;% &lt;![CDATA[
+J &lt; K %]]&gt;&lt;/script&gt;, 那么proposer不可能选(J, value), 因为算法规定 &lt;strong&gt;将v`置为返回中最大n_a的v_a&lt;/strong&gt;&lt;/li&gt;
+  &lt;li&gt;如果 &lt;script type=&quot;math/tex&quot;&gt;N &gt; J \geq K&lt;/script&gt;, 那么proposer选择(J, value)，又因为 &lt;script type=&quot;math/tex&quot;&gt;N &gt; J \geq M&lt;/script&gt;, (J, value)中value = &lt;script type=&quot;math/tex&quot;&gt;U&lt;/script&gt;【**】; 与假设的U &lt;script type=&quot;math/tex&quot;&gt;\neq&lt;/script&gt; V矛盾【*】。&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;p&gt;所以&lt;script type=&quot;math/tex&quot;&gt;N &gt; M&lt;/script&gt;时 &lt;script type=&quot;math/tex&quot;&gt;U = V&lt;/script&gt;， 又因为 &lt;script type=&quot;math/tex&quot;&gt;M' &gt; M&lt;/script&gt; , 对应的&lt;script type=&quot;math/tex&quot;&gt;W&lt;/script&gt;也等于&lt;script type=&quot;math/tex&quot;&gt;U&lt;/script&gt;。&lt;/p&gt;
+
+&lt;p&gt;[1] &lt;a href=&quot;https://pdos.csail.mit.edu/archive/6.824-2012/labs/lab-6.html&quot;&gt;https://pdos.csail.mit.edu/archive/6.824-2012/labs/lab-6.html&lt;/a&gt;&lt;/p&gt;
+
+&lt;p&gt;[2] &lt;a href=&quot;http://www.cs.toronto.edu/~samvas/teaching/2415/handouts/paxos-proof.pdf&quot;&gt;http://www.cs.toronto.edu/~samvas/teaching/2415/handouts/paxos-proof.pdf&lt;/a&gt;&lt;/p&gt;
+</content>
+  </entry>
   
   <entry>
     <title>File Systems Unfit as Distributed Storage Backends : Lessons From 10 Years of Ceph Evolution</title>
@@ -337,7 +471,7 @@ B for block的元数据&lt;/p&gt;
 
 &lt;p&gt;分片即将整体的数据分而治之。以多节点系统工作的方式共同完成一个工作。能够减轻节点服务器压力，提高整个集群节点利用率与性能。&lt;/p&gt;
 
-&lt;p&gt;这里引申出一个问题，为什么需要使用分片这一方式。在分布式系统中，有主副节点(master replica 数据上，Leader Follower raft一致性协议上)。能否在主副节点同时对数据进行操作，哪怕只是对副本进行读操作。至少在要求&lt;strong&gt;强一致&lt;/strong&gt;或者&lt;strong&gt;线性一致的&lt;/strong&gt;的存储系统中，答案是否定的。在这些系统中，副本只负责提高分布式系统的可用性，对系统的容灾性进行提升。client不能使用replica中的数据。因为副本节点没有向一致性propose的权利，无法保证这次操作已达成了共识。最主要的原因就是如果集群出现了脑裂,导致线性不一致。&lt;/p&gt;
+&lt;p&gt;这里引申出一个问题，为什么需要使用分片这一方式。在分布式系统中，有主副节点(master replica 数据上，Leader Follower raft一致性协议上)。能否在主副节点同时对数据进行操作，哪怕只是对副本进行读操作。至少在要求&lt;strong&gt;强一致&lt;/strong&gt;或者&lt;strong&gt;线性一致的&lt;/strong&gt;的存储系统中，&lt;del&gt;答案是否定的&lt;/del&gt;(更改：可以对副本进行访问，只不过需要一些策略)。在这些系统中，副本只负责提高分布式系统的可用性，对系统的容灾性进行提升。client不能使用replica中的数据。因为副本节点没有向一致性propose的权利，无法保证这次操作已达成了共识。最主要的原因就是如果集群出现了脑裂,导致线性不一致。&lt;/p&gt;
 
 &lt;p&gt;这里需要提到一点，就是原始的paxos协议，没有raft的leader和follower的区别。paxos角色为proposer和acceptor，但是任何节点都同时扮演这两种角色，一个基础的paxos协议需要多次网络请求（prepare，accept…）。任何节点都可以进行propose的结果就是导致了非常容易发生冲突，在多请求时很很难达成共识。所以一般在工程实现时使用multi-paxos，即也是选出leader打头阵。&lt;/p&gt;
 
